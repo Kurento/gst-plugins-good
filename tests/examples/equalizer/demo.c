@@ -1,3 +1,22 @@
+/* GStreamer
+ * Copyright (C) 2007 Sebastian Dröge <slomo@circular-chaos.org>
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with this library; if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+ * Boston, MA 02110-1301, USA.
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -100,6 +119,15 @@ draw_spectrum (gfloat * data)
   gdk_window_end_paint (gtk_widget_get_window (drawingarea));
 }
 
+static void
+dynamic_link (GstPadTemplate * templ, GstPad * newpad, gpointer user_data)
+{
+  GstPad *target = GST_PAD (user_data);
+
+  gst_pad_link (newpad, target);
+  gst_object_unref (target);
+}
+
 /* receive spectral data from element message */
 static gboolean
 message_handler (GstBus * bus, GstMessage * message, gpointer data)
@@ -130,22 +158,48 @@ int
 main (int argc, char *argv[])
 {
   GstElement *bin;
-  GstElement *src, *capsfilter, *equalizer, *spectrum, *audioconvert, *sink;
+  GstElement *decodebin, *decconvert;
+  GstElement *capsfilter, *equalizer, *spectrum, *sinkconvert, *sink;
   GstCaps *caps;
   GstBus *bus;
-  GtkWidget *appwindow, *vbox, *hbox, *widget;
-  int i;
+  GtkWidget *appwindow, *vbox, *hbox, *scale;
+  int i, num_bands = NBANDS;
+
+  GOptionEntry options[] = {
+    {"bands", 'b', 0, G_OPTION_ARG_INT, &num_bands,
+        "Number of bands", NULL},
+    {NULL}
+  };
+  GOptionContext *ctx;
+  GError *err = NULL;
+
+  ctx = g_option_context_new ("- demo of audio equalizer");
+  g_option_context_add_main_entries (ctx, options, NULL);
+  g_option_context_add_group (ctx, gst_init_get_option_group ());
+  g_option_context_add_group (ctx, gtk_get_option_group (TRUE));
+
+  if (!g_option_context_parse (ctx, &argc, &argv, &err)) {
+    g_print ("Error initializing: %s\n", err->message);
+    exit (1);
+  }
+
+  if (argc < 2) {
+    g_print ("Usage: %s <uri to play>\n", argv[0]);
+    g_print ("    For optional arguments: --help\n");
+    exit (-1);
+  }
 
   gst_init (&argc, &argv);
   gtk_init (&argc, &argv);
 
   bin = gst_pipeline_new ("bin");
 
-  /* White noise */
-  src = gst_element_factory_make ("audiotestsrc", "src");
-  g_object_set (G_OBJECT (src), "wave", 5, "volume", 0.8, NULL);
+  /* Uri decoding */
+  decodebin = gst_element_factory_make ("uridecodebin", "decoder");
+  g_object_set (G_OBJECT (decodebin), "uri", argv[1], NULL);
 
   /* Force float32 samples */
+  decconvert = gst_element_factory_make ("audioconvert", "decconvert");
   capsfilter = gst_element_factory_make ("capsfilter", "capsfilter");
   caps =
       gst_caps_new_simple ("audio/x-raw", "format", G_TYPE_STRING, "F32LE",
@@ -153,29 +207,35 @@ main (int argc, char *argv[])
   g_object_set (capsfilter, "caps", caps, NULL);
 
   equalizer = gst_element_factory_make ("equalizer-nbands", "equalizer");
-  g_object_set (G_OBJECT (equalizer), "num-bands", NBANDS, NULL);
+  g_object_set (G_OBJECT (equalizer), "num-bands", num_bands, NULL);
 
   spectrum = gst_element_factory_make ("spectrum", "spectrum");
   g_object_set (G_OBJECT (spectrum), "bands", spect_bands, "threshold", -80,
       "post-messages", TRUE, "interval", 500 * GST_MSECOND, NULL);
 
-  audioconvert = gst_element_factory_make ("audioconvert", "audioconvert");
+  sinkconvert = gst_element_factory_make ("audioconvert", "sinkconvert");
 
   sink = gst_element_factory_make ("autoaudiosink", "sink");
 
-  gst_bin_add_many (GST_BIN (bin), src, capsfilter, equalizer, spectrum,
-      audioconvert, sink, NULL);
-  if (!gst_element_link_many (src, capsfilter, equalizer, spectrum,
-          audioconvert, sink, NULL)) {
+  gst_bin_add_many (GST_BIN (bin), decodebin, decconvert, capsfilter, equalizer,
+      spectrum, sinkconvert, sink, NULL);
+  if (!gst_element_link_many (decconvert, capsfilter, equalizer, spectrum,
+          sinkconvert, sink, NULL)) {
     fprintf (stderr, "can't link elements\n");
     exit (1);
   }
+
+  /* Handle dynamic pads */
+  g_signal_connect (G_OBJECT (decodebin), "pad-added",
+      G_CALLBACK (dynamic_link), gst_element_get_static_pad (decconvert,
+          "sink"));
 
   bus = gst_element_get_bus (bin);
   gst_bus_add_watch (bus, message_handler, NULL);
   gst_object_unref (bus);
 
   appwindow = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+  gtk_window_set_title (GTK_WINDOW (appwindow), "Equalizer Demo");
   g_signal_connect (G_OBJECT (appwindow), "destroy",
       G_CALLBACK (on_window_destroy), NULL);
   vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
@@ -188,7 +248,7 @@ main (int argc, char *argv[])
 
   hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 20);
 
-  for (i = 0; i < NBANDS; i++) {
+  for (i = 0; i < num_bands; i++) {
     GObject *band;
     gdouble freq;
     gdouble bw;
@@ -208,35 +268,38 @@ main (int argc, char *argv[])
 
     scales_hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 
-    widget = gtk_scale_new_with_range (GTK_ORIENTATION_VERTICAL,
+    /* Create gain scale */
+    scale = gtk_scale_new_with_range (GTK_ORIENTATION_VERTICAL,
         -24.0, 12.0, 0.5);
-    gtk_scale_set_draw_value (GTK_SCALE (widget), TRUE);
-    gtk_scale_set_value_pos (GTK_SCALE (widget), GTK_POS_TOP);
-    gtk_range_set_value (GTK_RANGE (widget), gain);
-    gtk_widget_set_size_request (widget, 25, 150);
-    g_signal_connect (G_OBJECT (widget), "value-changed",
+    gtk_scale_set_draw_value (GTK_SCALE (scale), TRUE);
+    gtk_scale_set_value_pos (GTK_SCALE (scale), GTK_POS_TOP);
+    gtk_range_set_value (GTK_RANGE (scale), gain);
+    gtk_widget_set_size_request (scale, 35, 150);
+    g_signal_connect (G_OBJECT (scale), "value-changed",
         G_CALLBACK (on_gain_changed), (gpointer) band);
-    gtk_box_pack_start (GTK_BOX (scales_hbox), widget, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (scales_hbox), scale, FALSE, FALSE, 0);
 
-    widget = gtk_scale_new_with_range (GTK_ORIENTATION_VERTICAL,
+    /* Create bandwidth scale */
+    scale = gtk_scale_new_with_range (GTK_ORIENTATION_VERTICAL,
         0.0, 20000.0, 5.0);
-    gtk_scale_set_draw_value (GTK_SCALE (widget), TRUE);
-    gtk_scale_set_value_pos (GTK_SCALE (widget), GTK_POS_TOP);
-    gtk_range_set_value (GTK_RANGE (widget), bw);
-    gtk_widget_set_size_request (widget, 25, 150);
-    g_signal_connect (G_OBJECT (widget), "value-changed",
+    gtk_scale_set_draw_value (GTK_SCALE (scale), TRUE);
+    gtk_scale_set_value_pos (GTK_SCALE (scale), GTK_POS_TOP);
+    gtk_range_set_value (GTK_RANGE (scale), bw);
+    gtk_widget_set_size_request (scale, 45, 150);
+    g_signal_connect (G_OBJECT (scale), "value-changed",
         G_CALLBACK (on_bandwidth_changed), (gpointer) band);
-    gtk_box_pack_start (GTK_BOX (scales_hbox), widget, TRUE, TRUE, 0);
+    gtk_box_pack_start (GTK_BOX (scales_hbox), scale, TRUE, TRUE, 0);
 
-    widget = gtk_scale_new_with_range (GTK_ORIENTATION_VERTICAL,
+    /* Create frequency scale */
+    scale = gtk_scale_new_with_range (GTK_ORIENTATION_VERTICAL,
         20.0, 20000.0, 5.0);
-    gtk_scale_set_draw_value (GTK_SCALE (widget), TRUE);
-    gtk_scale_set_value_pos (GTK_SCALE (widget), GTK_POS_TOP);
-    gtk_range_set_value (GTK_RANGE (widget), freq);
-    gtk_widget_set_size_request (widget, 25, 150);
-    g_signal_connect (G_OBJECT (widget), "value-changed",
+    gtk_scale_set_draw_value (GTK_SCALE (scale), TRUE);
+    gtk_scale_set_value_pos (GTK_SCALE (scale), GTK_POS_TOP);
+    gtk_range_set_value (GTK_RANGE (scale), freq);
+    gtk_widget_set_size_request (scale, 45, 150);
+    g_signal_connect (G_OBJECT (scale), "value-changed",
         G_CALLBACK (on_freq_changed), (gpointer) band);
-    gtk_box_pack_start (GTK_BOX (scales_hbox), widget, TRUE, TRUE, 0);
+    gtk_box_pack_start (GTK_BOX (scales_hbox), scale, TRUE, TRUE, 0);
 
     gtk_container_add (GTK_CONTAINER (frame), scales_hbox);
 

@@ -1432,6 +1432,7 @@ gst_qtdemux_perform_seek (GstQTDemux * qtdemux, GstSegment * segment,
   }
   segment->position = desired_offset;
   segment->time = desired_offset;
+  segment->start = desired_offset;
 
   /* we stop at the end */
   if (segment->stop == -1)
@@ -6390,10 +6391,13 @@ gst_qtdemux_add_stream (GstQTDemux * qtdemux,
     if (stream->pending_tags)
       gst_tag_list_unref (stream->pending_tags);
     stream->pending_tags = list;
+    list = NULL;
     /* global tags go on each pad anyway */
     stream->send_global_tags = TRUE;
   }
 done:
+  if (list)
+    gst_tag_list_unref (list);
   return TRUE;
 }
 
@@ -9267,7 +9271,7 @@ skip_track:
   {
     GST_INFO_OBJECT (qtdemux, "skip disabled track");
     if (new_stream)
-      g_free (stream);
+      gst_qtdemux_stream_free (qtdemux, stream);
     return TRUE;
   }
 corrupt_file:
@@ -9275,14 +9279,14 @@ corrupt_file:
     GST_ELEMENT_ERROR (qtdemux, STREAM, DEMUX,
         (_("This file is corrupt and cannot be played.")), (NULL));
     if (new_stream)
-      g_free (stream);
+      gst_qtdemux_stream_free (qtdemux, stream);
     return FALSE;
   }
 error_encrypted:
   {
     GST_ELEMENT_ERROR (qtdemux, STREAM, DECRYPT, (NULL), (NULL));
     if (new_stream)
-      g_free (stream);
+      gst_qtdemux_stream_free (qtdemux, stream);
     return FALSE;
   }
 samples_failed:
@@ -9292,7 +9296,7 @@ segments_failed:
     /* free stbl sub-atoms */
     gst_qtdemux_stbl_free (stream);
     if (new_stream)
-      g_free (stream);
+      gst_qtdemux_stream_free (qtdemux, stream);
     return FALSE;
   }
 existing_stream:
@@ -9300,7 +9304,7 @@ existing_stream:
     GST_INFO_OBJECT (qtdemux, "stream with track id %i already exists",
         track_id);
     if (new_stream)
-      g_free (stream);
+      gst_qtdemux_stream_free (qtdemux, stream);
     return TRUE;
   }
 unknown_stream:
@@ -9308,7 +9312,7 @@ unknown_stream:
     GST_INFO_OBJECT (qtdemux, "unknown subtype %" GST_FOURCC_FORMAT,
         GST_FOURCC_ARGS (stream->subtype));
     if (new_stream)
-      g_free (stream);
+      gst_qtdemux_stream_free (qtdemux, stream);
     return TRUE;
   }
 too_many_streams:

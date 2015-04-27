@@ -88,8 +88,7 @@ enum
   PROP_RTCP_FEEDBACK_RETENTION_WINDOW,
   PROP_RTCP_IMMEDIATE_FEEDBACK_THRESHOLD,
   PROP_PROBATION,
-  PROP_STATS,
-  PROP_LAST
+  PROP_STATS
 };
 
 /* update average packet size */
@@ -2701,6 +2700,15 @@ rtp_session_update_send_caps (RTPSession * sess, GstCaps * caps)
       rtp_source_update_caps (source, caps);
       g_object_unref (source);
     }
+
+    if (gst_structure_get_uint (s, "rtx-ssrc", &ssrc)) {
+      source =
+          obtain_internal_source (sess, ssrc, &created, GST_CLOCK_TIME_NONE);
+      if (source) {
+        rtp_source_update_caps (source, caps);
+        g_object_unref (source);
+      }
+    }
     RTP_SESSION_UNLOCK (sess);
   }
 }
@@ -3874,6 +3882,11 @@ rtp_session_request_early_rtcp (RTPSession * sess, GstClockTime current_time,
           GST_TIME_ARGS (sess->next_rtcp_check_time));
       ret = TRUE;
     } else {
+      GST_LOG_OBJECT (sess,
+          "can't allow early feedback, next scheduled time is too late %"
+          GST_TIME_FORMAT " + %" GST_TIME_FORMAT " < %" GST_TIME_FORMAT,
+          GST_TIME_ARGS (current_time), GST_TIME_ARGS (max_delay),
+          GST_TIME_ARGS (sess->next_rtcp_check_time));
       ret = FALSE;
     }
     goto end;
@@ -3896,8 +3909,12 @@ rtp_session_request_early_rtcp (RTPSession * sess, GstClockTime current_time,
 
   /*  RFC 4585 section 3.5.2 step 3 */
   if (current_time + T_dither_max > sess->next_rtcp_check_time) {
-    GST_LOG_OBJECT (sess, "don't send because of dither");
-    ret = FALSE;
+    GST_LOG_OBJECT (sess,
+        "don't send because of dither, next scheduled time is soon %"
+        GST_TIME_FORMAT " + %" GST_TIME_FORMAT " > %" GST_TIME_FORMAT,
+        GST_TIME_ARGS (current_time), GST_TIME_ARGS (T_dither_max),
+        GST_TIME_ARGS (sess->next_rtcp_check_time));
+    ret = TRUE;
     goto end;
   }
 
@@ -3912,7 +3929,11 @@ rtp_session_request_early_rtcp (RTPSession * sess, GstClockTime current_time,
           GST_TIME_ARGS (sess->next_rtcp_check_time));
       ret = TRUE;
     } else {
-      GST_LOG_OBJECT (sess, "can't allow early feedback");
+      GST_LOG_OBJECT (sess,
+          "can't allow early feedback, next scheduled time is too late %"
+          GST_TIME_FORMAT " + %" GST_TIME_FORMAT " < %" GST_TIME_FORMAT,
+          GST_TIME_ARGS (current_time), GST_TIME_ARGS (max_delay),
+          GST_TIME_ARGS (sess->next_rtcp_check_time));
       ret = FALSE;
     }
     goto end;
@@ -3936,8 +3957,10 @@ rtp_session_request_early_rtcp (RTPSession * sess, GstClockTime current_time,
   sess->next_rtcp_check_time = sess->last_rtcp_send_time + 2 * T_rr;
   sess->last_rtcp_send_time += T_rr;
 
-  GST_LOG_OBJECT (sess, "next early RTCP time %" GST_TIME_FORMAT,
-      GST_TIME_ARGS (sess->next_early_rtcp_time));
+  GST_LOG_OBJECT (sess, "next early RTCP time %" GST_TIME_FORMAT
+      ", next regular RTCP time %" GST_TIME_FORMAT,
+      GST_TIME_ARGS (sess->next_early_rtcp_time),
+      GST_TIME_ARGS (sess->next_rtcp_check_time));
   RTP_SESSION_UNLOCK (sess);
 
   /* notify app of need to send packet early

@@ -232,8 +232,7 @@ enum
   PROP_SDES,
   PROP_TLS_VALIDATION_FLAGS,
   PROP_TLS_DATABASE,
-  PROP_DO_RETRANSMISSION,
-  PROP_LAST
+  PROP_DO_RETRANSMISSION
 };
 
 #define GST_TYPE_RTSP_NAT_METHOD (gst_rtsp_nat_method_get_type())
@@ -4642,6 +4641,8 @@ gst_rtspsrc_handle_data (GstRTSPSrc * src, GstRTSPMessage * message)
               gst_pad_send_event (ostream->channelpad[1],
                   gst_event_new_caps (caps));
           }
+
+          gst_caps_unref (caps);
         }
       }
     }

@@ -2330,21 +2330,6 @@ init:
   return ret;
 }
 
-static void
-check_and_subtract_ts (GstQTMux * qtmux, GstClockTime * ts_a, GstClockTime ts_b)
-{
-  if (G_LIKELY (GST_CLOCK_TIME_IS_VALID (*ts_a))) {
-    if (G_LIKELY (*ts_a >= ts_b)) {
-      *ts_a -= ts_b;
-    } else {
-      *ts_a = 0;
-      GST_WARNING_OBJECT (qtmux, "Subtraction would result in negative value, "
-          "using 0 as result");
-    }
-  }
-}
-
-
 static GstFlowReturn
 gst_qt_mux_register_and_push_sample (GstQTMux * qtmux, GstQTPad * pad,
     GstBuffer * buffer, gboolean is_last_buffer, guint nsamples,
@@ -2397,7 +2382,7 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
   guint64 chunk_offset;
   gint64 last_dts, scaled_duration;
   gint64 pts_offset = 0;
-  gboolean sync = FALSE, do_pts = FALSE;
+  gboolean sync = FALSE;
   GstFlowReturn ret = GST_FLOW_OK;
 
   if (!pad->fourcc)
@@ -2406,13 +2391,6 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
   /* if this pad has a prepare function, call it */
   if (pad->prepare_buf_func != NULL) {
     buf = pad->prepare_buf_func (pad, buf, qtmux);
-  }
-
-  if (G_LIKELY (buf != NULL && GST_CLOCK_TIME_IS_VALID (pad->first_ts) &&
-          pad->first_ts != 0)) {
-    buf = gst_buffer_make_writable (buf);
-    check_and_subtract_ts (qtmux, &GST_BUFFER_DTS (buf), pad->first_ts);
-    check_and_subtract_ts (qtmux, &GST_BUFFER_PTS (buf), pad->first_ts);
   }
 
   last_buf = pad->last_buf;
@@ -2429,11 +2407,7 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
         GST_BUFFER_DURATION (last_buf) : 0;
 
     buf = gst_buffer_make_writable (buf);
-    GST_BUFFER_DTS (buf) =
-        gst_segment_to_running_time (&pad->collect.segment, GST_FORMAT_TIME,
-        pad->collect.segment.start);
-    if (GST_CLOCK_TIME_IS_VALID (pad->first_ts))
-      check_and_subtract_ts (qtmux, &GST_BUFFER_DTS (buf), pad->first_ts);
+    GST_BUFFER_DTS (buf) = 0;   /* running-time 0 */
 
     if (last_buf
         && (GST_BUFFER_DTS (last_buf) + last_buf_duration) >
@@ -2471,7 +2445,6 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
   /* if this is the first buffer, store the timestamp */
   if (G_UNLIKELY (pad->first_ts == GST_CLOCK_TIME_NONE) && last_buf) {
     if (GST_BUFFER_DTS_IS_VALID (last_buf)) {
-      /* first pad always has DTS. If it was not provided by upstream it was set to segment start */
       pad->first_ts = GST_BUFFER_DTS (last_buf);
     } else if (GST_BUFFER_PTS_IS_VALID (last_buf)) {
       pad->first_ts = GST_BUFFER_PTS (last_buf);
@@ -2479,23 +2452,14 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
 
     if (GST_CLOCK_TIME_IS_VALID (pad->first_ts)) {
       GST_DEBUG ("setting first_ts to %" G_GUINT64_FORMAT, pad->first_ts);
-      last_buf = gst_buffer_make_writable (last_buf);
-      check_and_subtract_ts (qtmux, &GST_BUFFER_DTS (last_buf), pad->first_ts);
-      check_and_subtract_ts (qtmux, &GST_BUFFER_PTS (last_buf), pad->first_ts);
-      if (buf) {
-        buf = gst_buffer_make_writable (buf);
-        check_and_subtract_ts (qtmux, &GST_BUFFER_DTS (buf), pad->first_ts);
-        check_and_subtract_ts (qtmux, &GST_BUFFER_PTS (buf), pad->first_ts);
-      }
     } else {
-      GST_ERROR_OBJECT (qtmux, "First buffer for pad %s has no timestamp, "
+      GST_WARNING_OBJECT (qtmux, "First buffer for pad %s has no timestamp, "
           "using 0 as first timestamp", GST_PAD_NAME (pad->collect.pad));
       pad->first_ts = 0;
     }
     GST_DEBUG_OBJECT (qtmux, "Stored first timestamp for pad %s %"
         GST_TIME_FORMAT, GST_PAD_NAME (pad->collect.pad),
         GST_TIME_ARGS (pad->first_ts));
-
   }
 
   if (last_buf && buf && GST_CLOCK_TIME_IS_VALID (GST_BUFFER_DTS (buf)) &&
@@ -2606,7 +2570,6 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
   }
 
   if (GST_CLOCK_TIME_IS_VALID (GST_BUFFER_DTS (last_buf))) {
-    do_pts = TRUE;
     last_dts = gst_util_uint64_scale_round (GST_BUFFER_DTS (last_buf),
         atom_trak_get_timescale (pad->trak), GST_SECOND);
     pts_offset =
@@ -2615,7 +2578,6 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
 
   } else {
     pts_offset = 0;
-    do_pts = TRUE;
     last_dts = gst_util_uint64_scale_round (GST_BUFFER_PTS (last_buf),
         atom_trak_get_timescale (pad->trak), GST_SECOND);
   }
@@ -2639,7 +2601,7 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
   /* now we go and register this buffer/sample all over */
   ret = gst_qt_mux_register_and_push_sample (qtmux, pad, last_buf,
       buf == NULL, nsamples, last_dts, scaled_duration, sample_size,
-      chunk_offset, sync, do_pts, pts_offset);
+      chunk_offset, sync, TRUE, pts_offset);
 
   /* if this is sparse and we have a next buffer, check if there is any gap
    * between them to insert an empty sample */
@@ -2662,7 +2624,7 @@ gst_qt_mux_add_buffer (GstQTMux * qtmux, GstQTPad * pad, GstBuffer * buf)
       ret =
           gst_qt_mux_register_and_push_sample (qtmux, pad, empty_buf, FALSE, 1,
           last_dts + scaled_duration, empty_duration_scaled,
-          gst_buffer_get_size (empty_buf), qtmux->mdat_size, sync, do_pts, 0);
+          gst_buffer_get_size (empty_buf), qtmux->mdat_size, sync, TRUE, 0);
     } else {
       /* our only case currently is tx3g subtitles, so there is no reason to fill this yet */
       g_assert_not_reached ();

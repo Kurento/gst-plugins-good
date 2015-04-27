@@ -128,12 +128,14 @@ enum
 #define DEFAULT_MODE                RTP_JITTER_BUFFER_MODE_SLAVE
 #define DEFAULT_PERCENT             0
 #define DEFAULT_DO_RETRANSMISSION   FALSE
+#define DEFAULT_RTX_NEXT_SEQNUM     TRUE
 #define DEFAULT_RTX_DELAY           -1
 #define DEFAULT_RTX_MIN_DELAY       0
 #define DEFAULT_RTX_DELAY_REORDER   3
 #define DEFAULT_RTX_RETRY_TIMEOUT   -1
 #define DEFAULT_RTX_MIN_RETRY_TIMEOUT   -1
 #define DEFAULT_RTX_RETRY_PERIOD    -1
+#define DEFAULT_RTX_MAX_RETRIES    -1
 
 #define DEFAULT_AUTO_RTX_DELAY (20 * GST_MSECOND)
 #define DEFAULT_AUTO_RTX_TIMEOUT (40 * GST_MSECOND)
@@ -148,14 +150,15 @@ enum
   PROP_MODE,
   PROP_PERCENT,
   PROP_DO_RETRANSMISSION,
+  PROP_RTX_NEXT_SEQNUM,
   PROP_RTX_DELAY,
   PROP_RTX_MIN_DELAY,
   PROP_RTX_DELAY_REORDER,
   PROP_RTX_RETRY_TIMEOUT,
   PROP_RTX_MIN_RETRY_TIMEOUT,
   PROP_RTX_RETRY_PERIOD,
-  PROP_STATS,
-  PROP_LAST
+  PROP_RTX_MAX_RETRIES,
+  PROP_STATS
 };
 
 #define JBUF_LOCK(priv)   (g_mutex_lock (&(priv)->jbuf_lock))
@@ -244,12 +247,14 @@ struct _GstRtpJitterBufferPrivate
   gint64 ts_offset;
   gboolean do_lost;
   gboolean do_retransmission;
+  gboolean rtx_next_seqnum;
   gint rtx_delay;
   guint rtx_min_delay;
   gint rtx_delay_reorder;
   gint rtx_retry_timeout;
   gint rtx_min_retry_timeout;
   gint rtx_retry_period;
+  gint rtx_max_retries;
 
   /* the last seqnum we pushed out */
   guint32 last_popped_seqnum;
@@ -531,6 +536,23 @@ gst_rtp_jitter_buffer_class_init (GstRtpJitterBufferClass * klass)
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   /**
+   * GstRtpJitterBuffer:rtx-next-seqnum
+   *
+   * Estimate when the next packet should arrive and schedule a retransmission
+   * request for it.
+   * This is, when packet N arrives, a GstRTPRetransmission event is schedule
+   * for packet N+1. So it will be requested if it does not arrive at the expected time.
+   * The expected time is calculated using the dts of N and the packet spacing.
+   *
+   * Since: 1.6
+   */
+  g_object_class_install_property (gobject_class, PROP_RTX_NEXT_SEQNUM,
+      g_param_spec_boolean ("rtx-next-seqnum", "RTX next seqnum",
+          "Estimate when the next packet should arrive and schedule a "
+          "retransmission request for it.",
+          DEFAULT_RTX_NEXT_SEQNUM, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
    * GstRtpJitterBuffer:rtx-delay:
    *
    * When a packet did not arrive at the expected time, wait this extra amount
@@ -624,15 +646,56 @@ gst_rtp_jitter_buffer_class_init (GstRtpJitterBufferClass * klass)
           "(-1 automatic)", -1, G_MAXINT, DEFAULT_RTX_RETRY_PERIOD,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   /**
+   * GstRtpJitterBuffer:rtx-max-retries:
+   *
+   * The maximum number of retries to request a retransmission.
+   *
+   * This implies that as maximum (rtx-max-retries + 1) retransmissions will be requested.
+   * When -1 is used, the number of retransmission request will not be limited.
+   *
+   * Since: 1.6
+   */
+  g_object_class_install_property (gobject_class, PROP_RTX_MAX_RETRIES,
+      g_param_spec_int ("rtx-max-retries", "RTX Max Retries",
+          "The maximum number of retries to request a retransmission. "
+          "(-1 not limited)", -1, G_MAXINT, DEFAULT_RTX_MAX_RETRIES,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  /**
    * GstRtpJitterBuffer:stats:
    *
    * Various jitterbuffer statistics. This property returns a GstStructure
    * with name application/x-rtp-jitterbuffer-stats with the following fields:
    *
-   *  "rtx-count"         G_TYPE_UINT64 The number of retransmissions requested
-   *  "rtx-success-count" G_TYPE_UINT64 The number of successful retransmissions
-   *  "rtx-per-packet"    G_TYPE_DOUBLE Average number of RTX per packet
-   *  "rtx-rtt"           G_TYPE_UINT64 Average round trip time per RTX
+   * <itemizedlist>
+   * <listitem>
+   *   <para>
+   *   #guint64
+   *   <classname>&quot;rtx-count&quot;</classname>:
+   *   the number of retransmissions requested.
+   *   </para>
+   * </listitem>
+   * <listitem>
+   *   <para>
+   *   #guint64
+   *   <classname>&quot;rtx-success-count&quot;</classname>:
+   *   the number of successful retransmissions.
+   *   </para>
+   * </listitem>
+   * <listitem>
+   *   <para>
+   *   #gdouble
+   *   <classname>&quot;rtx-per-packet&quot;</classname>:
+   *   average number of RTX per packet.
+   *   </para>
+   * </listitem>
+   * <listitem>
+   *   <para>
+   *   #guint64
+   *   <classname>&quot;rtx-rtt&quot;</classname>:
+   *   average round trip time per RTX.
+   *   </para>
+   * </listitem>
+   * </itemizedlist>
    *
    * Since: 1.4
    */
@@ -750,12 +813,14 @@ gst_rtp_jitter_buffer_init (GstRtpJitterBuffer * jitterbuffer)
   priv->drop_on_latency = DEFAULT_DROP_ON_LATENCY;
   priv->do_lost = DEFAULT_DO_LOST;
   priv->do_retransmission = DEFAULT_DO_RETRANSMISSION;
+  priv->rtx_next_seqnum = DEFAULT_RTX_NEXT_SEQNUM;
   priv->rtx_delay = DEFAULT_RTX_DELAY;
   priv->rtx_min_delay = DEFAULT_RTX_MIN_DELAY;
   priv->rtx_delay_reorder = DEFAULT_RTX_DELAY_REORDER;
   priv->rtx_retry_timeout = DEFAULT_RTX_RETRY_TIMEOUT;
   priv->rtx_min_retry_timeout = DEFAULT_RTX_MIN_RETRY_TIMEOUT;
   priv->rtx_retry_period = DEFAULT_RTX_RETRY_PERIOD;
+  priv->rtx_max_retries = DEFAULT_RTX_MAX_RETRIES;
 
   priv->last_dts = -1;
   priv->last_rtptime = -1;
@@ -1849,11 +1914,13 @@ get_rtx_delay (GstRtpJitterBufferPrivate * priv)
   GstClockTime delay;
 
   if (priv->rtx_delay == -1) {
-    if (priv->avg_jitter == 0)
+    if (priv->avg_jitter == 0 && priv->packet_spacing == 0) {
       delay = DEFAULT_AUTO_RTX_DELAY;
-    else
-      /* jitter is in nanoseconds, 2x jitter is a good margin */
-      delay = priv->avg_jitter * 2;
+    } else {
+      /* jitter is in nanoseconds, maximum of 2x jitter and half the
+       * packet spacing is a good margin */
+      delay = MAX (priv->avg_jitter * 2, priv->packet_spacing / 2);
+    }
   } else {
     delay = priv->rtx_delay * GST_MSECOND;
   }
@@ -1910,7 +1977,7 @@ update_timers (GstRtpJitterBuffer * jitterbuffer, guint16 seqnum,
   }
 
   do_next_seqnum = do_next_seqnum && priv->packet_spacing > 0
-      && priv->do_retransmission;
+      && priv->do_retransmission && priv->rtx_next_seqnum;
 
   if (timer && timer->type != TIMER_TYPE_DEADLINE) {
     if (timer->num_rtx_retry > 0) {
@@ -1987,9 +2054,28 @@ calculate_packet_spacing (GstRtpJitterBuffer * jitterbuffer, guint32 rtptime,
   if (priv->ips_rtptime != rtptime) {
     /* rtptime changed, check dts diff */
     if (priv->ips_dts != -1 && dts != -1 && dts > priv->ips_dts) {
-      priv->packet_spacing = dts - priv->ips_dts;
+      GstClockTime new_packet_spacing = dts - priv->ips_dts;
+      GstClockTime old_packet_spacing = priv->packet_spacing;
+
+      /* Biased towards bigger packet spacings to prevent
+       * too many unneeded retransmission requests for next
+       * packets that just arrive a little later than we would
+       * expect */
+      if (old_packet_spacing > new_packet_spacing)
+        priv->packet_spacing =
+            (new_packet_spacing + 3 * old_packet_spacing) / 4;
+      else if (old_packet_spacing > 0)
+        priv->packet_spacing =
+            (3 * new_packet_spacing + old_packet_spacing) / 4;
+      else
+        priv->packet_spacing = new_packet_spacing;
+
       GST_DEBUG_OBJECT (jitterbuffer,
-          "new packet spacing %" GST_TIME_FORMAT,
+          "new packet spacing %" GST_TIME_FORMAT
+          " old packet spacing %" GST_TIME_FORMAT
+          " combined to %" GST_TIME_FORMAT,
+          GST_TIME_ARGS (new_packet_spacing),
+          GST_TIME_ARGS (old_packet_spacing),
           GST_TIME_ARGS (priv->packet_spacing));
     }
     priv->ips_rtptime = rtptime;
@@ -2004,6 +2090,7 @@ calculate_expected (GstRtpJitterBuffer * jitterbuffer, guint32 expected,
   GstRtpJitterBufferPrivate *priv = jitterbuffer->priv;
   GstClockTime total_duration, duration, expected_dts;
   TimerType type;
+  guint lost_packets = 0;
 
   GST_DEBUG_OBJECT (jitterbuffer,
       "dts %" GST_TIME_FORMAT ", last %" GST_TIME_FORMAT,
@@ -2025,7 +2112,6 @@ calculate_expected (GstRtpJitterBuffer * jitterbuffer, guint32 expected,
 
   if (total_duration > priv->latency_ns) {
     GstClockTime gap_time;
-    guint lost_packets;
 
     gap_time = total_duration - priv->latency_ns;
 
@@ -2052,7 +2138,7 @@ calculate_expected (GstRtpJitterBuffer * jitterbuffer, guint32 expected,
     priv->last_in_dts += gap_time;
   }
 
-  expected_dts = priv->last_in_dts + duration;
+  expected_dts = priv->last_in_dts + (lost_packets + 1) * duration;
 
   if (priv->do_retransmission) {
     TimerData *timer;
@@ -2300,6 +2386,7 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
             (GFunc) free_item_and_retain_events, &events);
         rtp_jitter_buffer_reset_skew (priv->jbuf);
         remove_all_timers (jitterbuffer);
+        priv->discont = TRUE;
         priv->last_popped_seqnum = -1;
         priv->next_seqnum = seqnum;
         do_next_seqnum = TRUE;
@@ -2886,8 +2973,9 @@ do_expected_timeout (GstRtpJitterBuffer * jitterbuffer, TimerData * timer,
       GST_TIME_FORMAT ", retry %" GST_TIME_FORMAT ", num_retry %u",
       GST_TIME_ARGS (timer->rtx_base), GST_TIME_ARGS (timer->rtx_delay),
       GST_TIME_ARGS (timer->rtx_retry), timer->num_rtx_retry);
-
-  if (timer->rtx_retry + timer->rtx_delay > rtx_retry_period) {
+  if ((priv->rtx_max_retries != -1
+          && timer->num_rtx_retry >= priv->rtx_max_retries)
+      || (timer->rtx_retry + timer->rtx_delay > rtx_retry_period)) {
     GST_DEBUG_OBJECT (jitterbuffer, "reschedule as LOST timer");
     /* too many retransmission request, we now convert the timer
      * to a lost timer, leave the num_rtx_retry as it is for stats */
@@ -3587,6 +3675,11 @@ gst_rtp_jitter_buffer_set_property (GObject * object,
       priv->do_retransmission = g_value_get_boolean (value);
       JBUF_UNLOCK (priv);
       break;
+    case PROP_RTX_NEXT_SEQNUM:
+      JBUF_LOCK (priv);
+      priv->rtx_next_seqnum = g_value_get_boolean (value);
+      JBUF_UNLOCK (priv);
+      break;
     case PROP_RTX_DELAY:
       JBUF_LOCK (priv);
       priv->rtx_delay = g_value_get_int (value);
@@ -3615,6 +3708,11 @@ gst_rtp_jitter_buffer_set_property (GObject * object,
     case PROP_RTX_RETRY_PERIOD:
       JBUF_LOCK (priv);
       priv->rtx_retry_period = g_value_get_int (value);
+      JBUF_UNLOCK (priv);
+      break;
+    case PROP_RTX_MAX_RETRIES:
+      JBUF_LOCK (priv);
+      priv->rtx_max_retries = g_value_get_int (value);
       JBUF_UNLOCK (priv);
       break;
     default:
@@ -3678,6 +3776,11 @@ gst_rtp_jitter_buffer_get_property (GObject * object,
       g_value_set_boolean (value, priv->do_retransmission);
       JBUF_UNLOCK (priv);
       break;
+    case PROP_RTX_NEXT_SEQNUM:
+      JBUF_LOCK (priv);
+      g_value_set_boolean (value, priv->rtx_next_seqnum);
+      JBUF_UNLOCK (priv);
+      break;
     case PROP_RTX_DELAY:
       JBUF_LOCK (priv);
       g_value_set_int (value, priv->rtx_delay);
@@ -3706,6 +3809,11 @@ gst_rtp_jitter_buffer_get_property (GObject * object,
     case PROP_RTX_RETRY_PERIOD:
       JBUF_LOCK (priv);
       g_value_set_int (value, priv->rtx_retry_period);
+      JBUF_UNLOCK (priv);
+      break;
+    case PROP_RTX_MAX_RETRIES:
+      JBUF_LOCK (priv);
+      g_value_set_int (value, priv->rtx_max_retries);
       JBUF_UNLOCK (priv);
       break;
     case PROP_STATS:
