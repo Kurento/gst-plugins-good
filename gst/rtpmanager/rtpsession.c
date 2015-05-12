@@ -55,8 +55,8 @@ enum
 };
 
 #define DEFAULT_INTERNAL_SOURCE      NULL
-#define DEFAULT_BANDWIDTH            RTP_STATS_BANDWIDTH
-#define DEFAULT_RTCP_FRACTION        (RTP_STATS_RTCP_FRACTION * RTP_STATS_BANDWIDTH)
+#define DEFAULT_BANDWIDTH            0.0
+#define DEFAULT_RTCP_FRACTION        RTP_STATS_RTCP_FRACTION
 #define DEFAULT_RTCP_RR_BANDWIDTH    -1
 #define DEFAULT_RTCP_RS_BANDWIDTH    -1
 #define DEFAULT_RTCP_MTU             1400
@@ -2801,9 +2801,8 @@ calculate_rtcp_interval (RTPSession * sess, gboolean deterministic,
 
       g_hash_table_foreach (sess->ssrcs[sess->mask_idx],
           (GHFunc) add_bitrates, &bandwidth);
-      bandwidth /= 8.0;
     }
-    if (bandwidth < 8000)
+    if (bandwidth < RTP_STATS_BANDWIDTH)
       bandwidth = RTP_STATS_BANDWIDTH;
 
     rtp_stats_set_bandwidths (&sess->stats, bandwidth,
@@ -3563,7 +3562,7 @@ early:
     /* Apply the rules from RFC 4585 section 3.5.3 */
     if (stats->min_interval != 0 && !sess->first_rtcp) {
       GstClockTime T_rr_current_interval =
-          g_random_double_range (0.5, 1.5) * stats->min_interval;
+          g_random_double_range (0.5, 1.5) * stats->min_interval * GST_SECOND;
 
       /* This will caused the RTCP to be suppressed if no FB packets are added */
       if (sess->last_rtcp_send_time + T_rr_current_interval > new_send_time) {
@@ -3856,7 +3855,7 @@ rtp_session_request_early_rtcp (RTPSession * sess, GstClockTime current_time,
   /*  RFC 4585 section 3.5.2 step 2 */
   if (GST_CLOCK_TIME_IS_VALID (sess->next_early_rtcp_time)) {
     GST_LOG_OBJECT (sess, "already have next early rtcp time");
-    ret = TRUE;
+    ret = (current_time + max_delay > sess->next_early_rtcp_time);
     goto end;
   }
 

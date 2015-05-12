@@ -1240,6 +1240,29 @@ gst_matroska_demux_add_stream (GstMatroskaDemux * demux, GstEbmlRead * ebml)
   gst_pad_push_event (context->pad, stream_start);
   gst_pad_set_caps (context->pad, context->caps);
 
+
+  if (demux->common.global_tags) {
+    GstEvent *tag_event;
+
+    gst_tag_list_add (demux->common.global_tags, GST_TAG_MERGE_REPLACE,
+        GST_TAG_CONTAINER_FORMAT, "Matroska", NULL);
+    GST_DEBUG_OBJECT (context->pad, "Sending global_tags %p: %" GST_PTR_FORMAT,
+        demux->common.global_tags, demux->common.global_tags);
+
+    tag_event =
+        gst_event_new_tag (gst_tag_list_copy (demux->common.global_tags));
+
+    gst_pad_push_event (context->pad, tag_event);
+  }
+
+  if (G_UNLIKELY (context->tags_changed)) {
+    GST_DEBUG_OBJECT (context->pad, "Sending tags %p: %"
+        GST_PTR_FORMAT, context->tags, context->tags);
+    gst_pad_push_event (context->pad,
+        gst_event_new_tag (gst_tag_list_copy (context->tags)));
+    context->tags_changed = FALSE;
+  }
+
   gst_element_add_pad (GST_ELEMENT (demux), context->pad);
   gst_flow_combiner_add_pad (demux->flowcombiner, context->pad);
 
@@ -4354,8 +4377,11 @@ gst_matroska_demux_parse_id (GstMatroskaDemux * demux, guint32 id,
 
             g_assert (event);
             /* unlikely to fail, since we managed to seek to this point */
-            if (!gst_matroska_demux_handle_seek_event (demux, NULL, event))
+            if (!gst_matroska_demux_handle_seek_event (demux, NULL, event)) {
+              gst_event_unref (event);
               goto seek_failed;
+            }
+            gst_event_unref (event);
             /* resume data handling, main thread clear to seek again */
             GST_OBJECT_LOCK (demux);
             demux->common.state = GST_MATROSKA_READ_STATE_DATA;

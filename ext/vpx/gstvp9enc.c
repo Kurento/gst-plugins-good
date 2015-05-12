@@ -40,7 +40,7 @@
  * <refsect2>
  * <title>Example pipeline</title>
  * |[
- * gst-launch -v videotestsrc num-buffers=1000 ! vp9enc ! webmmux ! filesink location=videotestsrc.webm
+ * gst-launch-1.0 -v videotestsrc num-buffers=1000 ! vp9enc ! webmmux ! filesink location=videotestsrc.webm
  * ]| This example pipeline will encode a test video source to VP9 muxed in an
  * WebM container.
  * </refsect2>
@@ -1513,22 +1513,12 @@ gst_vp9_enc_set_format (GstVideoEncoder * video_encoder,
     GST_DEBUG_OBJECT (video_encoder, "Using timebase configuration");
     encoder->cfg.g_timebase.num = encoder->timebase_n;
     encoder->cfg.g_timebase.den = encoder->timebase_d;
-  } else if (GST_VIDEO_INFO_FPS_D (info) != 0
-      && GST_VIDEO_INFO_FPS_N (info) != 0) {
-    /* GstVideoInfo holds either the framerate or max-framerate (if framerate
-     * is 0) in FPS so this will be used if max-framerate or framerate
-     * is set */
-    GST_DEBUG_OBJECT (video_encoder, "Setting timebase from framerate");
-    encoder->cfg.g_timebase.num = GST_VIDEO_INFO_FPS_D (info);
-    encoder->cfg.g_timebase.den = GST_VIDEO_INFO_FPS_N (info);
   } else {
     /* Zero framerate and max-framerate but still need to setup the timebase to avoid
      * a divide by zero error. Presuming the lowest common denominator will be RTP -
      * VP9 payload draft states clock rate of 90000 which should work for anyone where
      * FPS < 90000 (shouldn't be too many cases where it's higher) though wouldn't be optimal. RTP specification
      * http://tools.ietf.org/html/draft-ietf-payload-vp9-01 section 6.3.1 */
-    GST_WARNING_OBJECT (encoder,
-        "No timebase and zero framerate setting timebase to 1/90000");
     encoder->cfg.g_timebase.num = 1;
     encoder->cfg.g_timebase.den = 90000;
   }
@@ -1832,8 +1822,8 @@ gst_vp9_enc_drain (GstVideoEncoder * video_encoder)
 
   pts =
       gst_util_uint64_scale (encoder->last_pts,
-      encoder->cfg.g_timebase.num * (GstClockTime) GST_SECOND,
-      encoder->cfg.g_timebase.den);
+      encoder->cfg.g_timebase.den,
+      encoder->cfg.g_timebase.num * (GstClockTime) GST_SECOND);
 
   status = vpx_codec_encode (&encoder->encoder, NULL, pts, 0, flags, deadline);
   g_mutex_unlock (&encoder->encoder_lock);
@@ -1951,15 +1941,14 @@ gst_vp9_enc_handle_frame (GstVideoEncoder * video_encoder,
   g_mutex_lock (&encoder->encoder_lock);
   pts =
       gst_util_uint64_scale (frame->pts,
-      encoder->cfg.g_timebase.num * (GstClockTime) GST_SECOND,
-      encoder->cfg.g_timebase.den);
+      encoder->cfg.g_timebase.den,
+      encoder->cfg.g_timebase.num * (GstClockTime) GST_SECOND);
   encoder->last_pts = frame->pts;
 
   if (frame->duration != GST_CLOCK_TIME_NONE) {
     duration =
-        gst_util_uint64_scale (frame->duration,
-        encoder->cfg.g_timebase.num * (GstClockTime) GST_SECOND,
-        encoder->cfg.g_timebase.den);
+        gst_util_uint64_scale (frame->duration, encoder->cfg.g_timebase.den,
+        encoder->cfg.g_timebase.num * (GstClockTime) GST_SECOND);
     encoder->last_pts += frame->duration;
   } else {
     duration = 1;
