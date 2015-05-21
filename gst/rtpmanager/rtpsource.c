@@ -280,12 +280,10 @@ static void
 rtp_source_finalize (GObject * object)
 {
   RTPSource *src;
-  GstBuffer *buffer;
 
   src = RTP_SOURCE_CAST (object);
 
-  while ((buffer = g_queue_pop_head (src->packets)))
-    gst_buffer_unref (buffer);
+  g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
   g_queue_free (src->packets);
 
   gst_structure_free (src->sdes);
@@ -296,8 +294,7 @@ rtp_source_finalize (GObject * object)
 
   g_list_free_full (src->conflicting_addresses,
       (GDestroyNotify) rtp_conflicting_address_free);
-  while ((buffer = g_queue_pop_head (src->retained_feedback)))
-    gst_buffer_unref (buffer);
+  g_queue_foreach (src->retained_feedback, (GFunc) gst_buffer_unref, NULL);
   g_queue_free (src->retained_feedback);
 
   g_array_free (src->nacks, TRUE);
@@ -997,9 +994,9 @@ do_bitrate_estimation (RTPSource * src, GstClockTime running_time,
 static gboolean
 update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
 {
-  guint16 seqnr, udelta;
+  guint16 seqnr, expected;
   RTPSourceStats *stats;
-  guint16 expected;
+  gint16 delta;
 
   stats = &src->stats;
 
@@ -1013,18 +1010,22 @@ update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
     src->curr_probation = src->probation;
   }
 
-  udelta = seqnr - stats->max_seq;
+  expected = src->stats.max_seq + 1;
+  delta = gst_rtp_buffer_compare_seqnum (expected, seqnr);
 
   /* if we are still on probation, check seqnum */
   if (src->curr_probation) {
-    expected = src->stats.max_seq + 1;
-
     /* when in probation, we require consecutive seqnums */
-    if (seqnr == expected) {
+    if (delta == 0) {
       /* expected packet */
       GST_DEBUG ("probation: seqnr %d == expected %d", seqnr, expected);
       src->curr_probation--;
+      if (seqnr < stats->max_seq) {
+        /* sequence number wrapped - count another 64K cycle. */
+        stats->cycles += RTP_SEQ_MOD;
+      }
       src->stats.max_seq = seqnr;
+
       if (src->curr_probation == 0) {
         GST_DEBUG ("probation done!");
         init_seq (src, seqnr);
@@ -1046,16 +1047,21 @@ update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
       /* unexpected seqnum in probation */
       goto probation_seqnum;
     }
-  } else if (udelta < RTP_MAX_DROPOUT) {
+  } else if (delta >= 0 && delta < RTP_MAX_DROPOUT) {
+    /* Clear bad packets */
+    stats->bad_seq = RTP_SEQ_MOD + 1;   /* so seq == bad_seq is false */
+    g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
+    g_queue_clear (src->packets);
+
     /* in order, with permissible gap */
     if (seqnr < stats->max_seq) {
       /* sequence number wrapped - count another 64K cycle. */
       stats->cycles += RTP_SEQ_MOD;
     }
     stats->max_seq = seqnr;
-  } else if (udelta <= RTP_SEQ_MOD - RTP_MAX_MISORDER) {
+  } else if (delta < -RTP_MAX_MISORDER || delta >= RTP_MAX_DROPOUT) {
     /* the sequence number made a very large jump */
-    if (seqnr == stats->bad_seq) {
+    if (seqnr == stats->bad_seq && src->packets->head) {
       /* two sequential packets -- assume that the other side
        * restarted without telling us so just re-sync
        * (i.e., pretend this was the first packet).  */
@@ -1063,11 +1069,21 @@ update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
     } else {
       /* unacceptable jump */
       stats->bad_seq = (seqnr + 1) & (RTP_SEQ_MOD - 1);
+      g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
+      g_queue_clear (src->packets);
+      g_queue_push_tail (src->packets, pinfo->data);
+      pinfo->data = NULL;
       goto bad_sequence;
     }
-  } else {
+  } else {                      /* delta < 0 && delta >= -RTP_MAX_MISORDER */
+    /* Clear bad packets */
+    stats->bad_seq = RTP_SEQ_MOD + 1;   /* so seq == bad_seq is false */
+    g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
+    g_queue_clear (src->packets);
+
     /* duplicate or reordered packet, will be filtered by jitterbuffer. */
-    GST_WARNING ("duplicate or reordered packet (seqnr %d)", seqnr);
+    GST_WARNING ("duplicate or reordered packet (seqnr %u, expected %u)", seqnr,
+        expected);
   }
 
   src->stats.octets_received += pinfo->payload_len;
@@ -1076,7 +1092,7 @@ update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
   /* for the bitrate estimation */
   src->bytes_received += pinfo->payload_len;
 
-  GST_LOG ("seq %d, PC: %" G_GUINT64_FORMAT ", OC: %" G_GUINT64_FORMAT,
+  GST_LOG ("seq %u, PC: %" G_GUINT64_FORMAT ", OC: %" G_GUINT64_FORMAT,
       seqnr, src->stats.packets_received, src->stats.octets_received);
 
   return TRUE;
