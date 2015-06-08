@@ -1132,6 +1132,20 @@ atom_udta_clear (AtomUDTA * udta)
     atom_info_list_free (udta->entries);
 }
 
+/* Clear added tags, but keep the context/flavor the same */
+void
+atom_udta_clear_tags (AtomUDTA * udta)
+{
+  if (udta->entries) {
+    atom_info_list_free (udta->entries);
+    udta->entries = NULL;
+  }
+  if (udta->meta && udta->meta->ilst->entries) {
+    atom_info_list_free (udta->meta->ilst->entries);
+    udta->meta->ilst->entries = NULL;
+  }
+}
+
 static void
 atom_tag_data_init (AtomTagData * data)
 {
@@ -1980,12 +1994,13 @@ atom_stco64_copy_data (AtomSTCO64 * stco64, guint8 ** buffer, guint64 * size,
   prop_copy_ensure_buffer (buffer, size, offset,
       8 * atom_array_get_len (&stco64->entries));
   for (i = 0; i < atom_array_get_len (&stco64->entries); i++) {
-    guint64 *value = &atom_array_index (&stco64->entries, i);
+    guint64 value =
+        atom_array_index (&stco64->entries, i) + stco64->chunk_offset;
 
     if (trunc_to_32) {
-      prop_copy_uint32 ((guint32) * value, buffer, size, offset);
+      prop_copy_uint32 ((guint32) value, buffer, size, offset);
     } else {
-      prop_copy_uint64 (*value, buffer, size, offset);
+      prop_copy_uint64 (value, buffer, size, offset);
     }
   }
 
@@ -2749,6 +2764,12 @@ atom_moov_add_trak (AtomMOOV * moov, AtomTRAK * trak)
   atom_moov_add_trex (moov, atom_trex_new (trak));
 }
 
+guint
+atom_moov_get_trak_count (AtomMOOV * moov)
+{
+  return g_list_length (moov->traks);
+}
+
 static guint64
 atom_trak_get_duration (AtomTRAK * trak)
 {
@@ -2821,28 +2842,27 @@ atom_moov_set_fragmented (AtomMOOV * moov, gboolean fragmented)
 }
 
 void
-atom_stco64_chunks_add_offset (AtomSTCO64 * stco64, guint32 offset)
+atom_stco64_chunks_set_offset (AtomSTCO64 * stco64, guint32 offset)
 {
-  guint i;
-
-  for (i = 0; i < atom_array_get_len (&stco64->entries); i++) {
-    guint64 *value = &atom_array_index (&stco64->entries, i);
-
-    *value += offset;
-  }
+  stco64->chunk_offset = offset;
 }
 
 void
-atom_moov_chunks_add_offset (AtomMOOV * moov, guint32 offset)
+atom_moov_chunks_set_offset (AtomMOOV * moov, guint32 offset)
 {
   GList *traks = moov->traks;
+
+  if (offset == moov->chunks_offset)
+    return;                     /* Nothing to do */
 
   while (traks) {
     AtomTRAK *trak = (AtomTRAK *) traks->data;
 
-    atom_stco64_chunks_add_offset (&trak->mdia.minf.stbl.stco64, offset);
+    atom_stco64_chunks_set_offset (&trak->mdia.minf.stbl.stco64, offset);
     traks = g_list_next (traks);
   }
+
+  moov->chunks_offset = offset;
 }
 
 void
@@ -3279,31 +3299,41 @@ atom_tkhd_set_subtitle (AtomTKHD * tkhd, AtomsContext * context, guint32 width,
 
 
 static void
-atom_edts_add_entry (AtomEDTS * edts, EditListEntry * entry)
+atom_edts_add_entry (AtomEDTS * edts, gint index, EditListEntry * entry)
 {
-  edts->elst.entries = g_slist_append (edts->elst.entries, entry);
+  EditListEntry *e =
+      (EditListEntry *) g_slist_nth_data (edts->elst.entries, index);
+  /* Create a new entry if missing (appends to the list if index is larger) */
+  if (e == NULL) {
+    e = g_new (EditListEntry, 1);
+    edts->elst.entries = g_slist_insert (edts->elst.entries, e, index);
+  }
+
+  /* Update the entry */
+  *e = *entry;
 }
 
-/* 
- * Adds a new entry to this trak edits list
+/*
+ * Update an entry in this trak edits list, creating it if needed.
+ * index is the index of the entry to update, or create if it's past the end.
  * duration is in the moov's timescale
  * media_time is the offset in the media time to start from (media's timescale)
  * rate is a 32 bits fixed-point
  */
 void
-atom_trak_add_elst_entry (AtomTRAK * trak, guint32 duration, guint32 media_time,
-    guint32 rate)
+atom_trak_set_elst_entry (AtomTRAK * trak, gint index,
+    guint32 duration, guint32 media_time, guint32 rate)
 {
-  EditListEntry *entry = g_new (EditListEntry, 1);
+  EditListEntry entry;
 
-  entry->duration = duration;
-  entry->media_time = media_time;
-  entry->media_rate = rate;
+  entry.duration = duration;
+  entry.media_time = media_time;
+  entry.media_rate = rate;
 
-  if (trak->edts == NULL) {
+  if (trak->edts == NULL)
     trak->edts = atom_edts_new ();
-  }
-  atom_edts_add_entry (trak->edts, entry);
+
+  atom_edts_add_entry (trak->edts, index, &entry);
 }
 
 /* re-negotiation is prevented at top-level, so only 1 entry expected.
