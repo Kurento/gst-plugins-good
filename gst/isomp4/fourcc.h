@@ -83,6 +83,7 @@ G_BEGIN_DECLS
 #define FOURCC__too     GST_MAKE_FOURCC(0xa9,'t','o','o')
 #define FOURCC__wrt     GST_MAKE_FOURCC(0xa9,'w','r','t')
 #define FOURCC_aART     GST_MAKE_FOURCC('a','A','R','T')
+#define FOURCC_ac_3     GST_MAKE_FOURCC('a','c','-','3')
 #define FOURCC_agsm     GST_MAKE_FOURCC('a','g','s','m')
 #define FOURCC_alac     GST_MAKE_FOURCC('a','l','a','c')
 #define FOURCC_alaw     GST_MAKE_FOURCC('a','l','a','w')
@@ -101,6 +102,8 @@ G_BEGIN_DECLS
 #define FOURCC_crgn     GST_MAKE_FOURCC('c','r','g','n')
 #define FOURCC_ctab     GST_MAKE_FOURCC('c','t','a','b')
 #define FOURCC_ctts     GST_MAKE_FOURCC('c','t','t','s')
+#define FOURCC_cslg     GST_MAKE_FOURCC('c','s','l','g')
+#define FOURCC_dac3     GST_MAKE_FOURCC('d','a','c','3')
 #define FOURCC_data     GST_MAKE_FOURCC('d','a','t','a')
 #define FOURCC_dcom     GST_MAKE_FOURCC('d','c','o','m')
 #define FOURCC_desc     GST_MAKE_FOURCC('d','e','s','c')
@@ -318,6 +321,12 @@ G_BEGIN_DECLS
    'm', 's', then the 16 bit wave codec id */
 #define MS_WAVE_FOURCC(codecid)  GST_MAKE_FOURCC( \
         'm', 's', ((codecid)>>8)&0xff, ((codecid)&0xff))
+
+/* MPEG Application Format , Stereo Video */
+#define FOURCC_ss01     GST_MAKE_FOURCC('s','s','0','1')
+#define FOURCC_ss02     GST_MAKE_FOURCC('s','s','0','2')
+#define FOURCC_svmi     GST_MAKE_FOURCC('s','v','m','i')
+#define FOURCC_scdi     GST_MAKE_FOURCC('s','c','d','i')
 
 G_END_DECLS
 

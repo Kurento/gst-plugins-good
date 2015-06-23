@@ -499,14 +499,16 @@ qtdemux_dump_stco (GstQTDemux * qtdemux, GstByteReader * data, int depth)
 gboolean
 qtdemux_dump_ctts (GstQTDemux * qtdemux, GstByteReader * data, int depth)
 {
-  guint32 ver_flags = 0, num_entries = 0, i, count, offset;
+  guint32 ver_flags = 0, num_entries = 0, i, count;
+  gint32 offset;
+
 
   if (!gst_byte_reader_get_uint32_be (data, &ver_flags) ||
       !gst_byte_reader_get_uint32_be (data, &num_entries))
     return FALSE;
 
   GST_LOG ("%*s  version/flags: %08x", depth, "", ver_flags);
-  GST_LOG ("%*s  n entries:     %d", depth, "", num_entries);
+  GST_LOG ("%*s  n entries:     %u", depth, "", num_entries);
 
   if (!qt_atom_parser_has_chunks (data, num_entries, 4 + 4))
     return FALSE;
@@ -516,6 +518,28 @@ qtdemux_dump_ctts (GstQTDemux * qtdemux, GstByteReader * data, int depth)
     offset = GET_UINT32 (data);
     GST_LOG ("%*s    sample count :%8d offset: %8d", depth, "", count, offset);
   }
+  return TRUE;
+}
+
+gboolean
+qtdemux_dump_cslg (GstQTDemux * qtdemux, GstByteReader * data, int depth)
+{
+  guint32 ver_flags = 0, shift = 0;
+  gint32 least_offset = 0, start_time = 0, end_time = 0;
+
+  if (!gst_byte_reader_get_uint32_be (data, &ver_flags) ||
+      !gst_byte_reader_get_uint32_be (data, &shift) ||
+      !gst_byte_reader_get_int32_be (data, &least_offset) ||
+      !gst_byte_reader_get_int32_be (data, &start_time) ||
+      !gst_byte_reader_get_int32_be (data, &end_time))
+    return FALSE;
+
+  GST_LOG ("%*s  version/flags: %08x", depth, "", ver_flags);
+  GST_LOG ("%*s  shift:         %u", depth, "", shift);
+  GST_LOG ("%*s  least offset:  %d", depth, "", least_offset);
+  GST_LOG ("%*s  start time:    %d", depth, "", start_time);
+  GST_LOG ("%*s  end time:      %d", depth, "", end_time);
+
   return TRUE;
 }
 
@@ -832,6 +856,36 @@ qtdemux_dump_sdtp (GstQTDemux * qtdemux, GstByteReader * data, int depth)
     GST_LOG ("%*s     early display: %d", depth, "",
         ((guint16) (val >> 6)) & 0x1);
     ++i;
+  }
+  return TRUE;
+}
+
+gboolean
+qtdemux_dump_svmi (GstQTDemux * qtdemux, GstByteReader * data, int depth)
+{
+  guint32 version;
+  guint stereo_mono_change_count;
+  guint i;
+
+  version = GET_UINT32 (data);
+  GST_LOG ("%*s  version/flags: %08x", depth, "", version);
+
+  if (!version) {
+    /* stereoscopic visual type information */
+    GST_LOG ("%*s     stereo_composition_type: %d", depth, "",
+        GET_UINT8 (data));
+    GST_LOG ("%*s     is_left_first: %d", depth, "",
+        ((guint8) GET_UINT8 (data)) & 0x01);
+
+    /* stereo_mono_change information */
+    stereo_mono_change_count = GET_UINT32 (data);
+    GST_LOG ("%*s     stereo_mono_change_count: %d", depth, "",
+        stereo_mono_change_count);
+    for (i = 1; i <= stereo_mono_change_count; i++) {
+      GST_LOG ("%*s     sample_count: %d", depth, "", GET_UINT32 (data));
+      GST_LOG ("%*s     stereo_flag: %d", depth, "",
+          ((guint8) GET_UINT8 (data)) & 0x01);
+    }
   }
   return TRUE;
 }

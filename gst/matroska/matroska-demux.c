@@ -731,12 +731,61 @@ gst_matroska_demux_add_stream (GstMatroskaDemux * demux, GstEbmlRead * ebml)
               g_free (data);
               break;
             }
+            case GST_MATROSKA_ID_VIDEOSTEREOMODE:
+            {
+              guint64 num;
+
+              if ((ret = gst_ebml_read_uint (ebml, &id, &num)) != GST_FLOW_OK)
+                break;
+
+              GST_DEBUG_OBJECT (demux, "StereoMode: %" G_GUINT64_FORMAT, num);
+
+              switch (num) {
+                case GST_MATROSKA_STEREO_MODE_SBS_RL:
+                  videocontext->multiview_flags =
+                      GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST;
+                  /* fall through */
+                case GST_MATROSKA_STEREO_MODE_SBS_LR:
+                  videocontext->multiview_mode =
+                      GST_VIDEO_MULTIVIEW_MODE_SIDE_BY_SIDE;
+                  break;
+                case GST_MATROSKA_STEREO_MODE_TB_RL:
+                  videocontext->multiview_flags =
+                      GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST;
+                  /* fall through */
+                case GST_MATROSKA_STEREO_MODE_TB_LR:
+                  videocontext->multiview_mode =
+                      GST_VIDEO_MULTIVIEW_MODE_TOP_BOTTOM;
+                  break;
+                case GST_MATROSKA_STEREO_MODE_CHECKER_RL:
+                  videocontext->multiview_flags =
+                      GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST;
+                  /* fall through */
+                case GST_MATROSKA_STEREO_MODE_CHECKER_LR:
+                  videocontext->multiview_mode =
+                      GST_VIDEO_MULTIVIEW_MODE_CHECKERBOARD;
+                  break;
+                case GST_MATROSKA_STEREO_MODE_FBF_RL:
+                  videocontext->multiview_flags =
+                      GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST;
+                  /* fall through */
+                case GST_MATROSKA_STEREO_MODE_FBF_LR:
+                  videocontext->multiview_mode =
+                      GST_VIDEO_MULTIVIEW_MODE_FRAME_BY_FRAME;
+                  /* FIXME: In frame-by-frame mode, left/right frame buffers are
+                   * laced within one block, and we'll need to apply FIRST_IN_BUNDLE
+                   * accordingly. See http://www.matroska.org/technical/specs/index.html#StereoMode */
+                  GST_FIXME_OBJECT (demux,
+                      "Frame-by-frame stereoscopic mode not fully implemented");
+                  break;
+              }
+              break;
+            }
 
             default:
               GST_WARNING_OBJECT (demux,
                   "Unknown TrackVideo subelement 0x%x - ignoring", id);
               /* fall through */
-            case GST_MATROSKA_ID_VIDEOSTEREOMODE:
             case GST_MATROSKA_ID_VIDEODISPLAYUNIT:
             case GST_MATROSKA_ID_VIDEOPIXELCROPBOTTOM:
             case GST_MATROSKA_ID_VIDEOPIXELCROPTOP:
@@ -1074,9 +1123,7 @@ gst_matroska_demux_add_stream (GstMatroskaDemux * demux, GstEbmlRead * ebml)
     demux->common.num_streams--;
     g_ptr_array_remove_index (demux->common.src, demux->common.num_streams);
     g_assert (demux->common.src->len == demux->common.num_streams);
-    if (context) {
-      gst_matroska_track_free (context);
-    }
+    gst_matroska_track_free (context);
 
     return ret;
   }
@@ -5183,6 +5230,20 @@ gst_matroska_demux_video_caps (GstMatroskaTrackVideoContext *
       if (videocontext->parent.flags & GST_MATROSKA_VIDEOTRACK_INTERLACED)
         gst_structure_set (structure, "interlace-mode", G_TYPE_STRING,
             "mixed", NULL);
+    }
+    if (videocontext->multiview_mode != GST_VIDEO_MULTIVIEW_MODE_NONE) {
+      if (gst_video_multiview_guess_half_aspect (videocontext->multiview_mode,
+              videocontext->pixel_width, videocontext->pixel_height,
+              videocontext->display_width * videocontext->pixel_height,
+              videocontext->display_height * videocontext->pixel_width)) {
+        videocontext->multiview_flags |= GST_VIDEO_MULTIVIEW_FLAGS_HALF_ASPECT;
+      }
+      gst_caps_set_simple (caps,
+          "multiview-mode", G_TYPE_STRING,
+          gst_video_multiview_mode_to_caps_string
+          (videocontext->multiview_mode), "multiview-flags",
+          GST_TYPE_VIDEO_MULTIVIEW_FLAGSET, videocontext->multiview_flags,
+          GST_FLAG_SET_MASK_EXACT, NULL);
     }
 
     caps = gst_caps_simplify (caps);

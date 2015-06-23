@@ -109,6 +109,9 @@ struct _GstQTPad
   /* dts of last_buf */
   GstClockTime last_dts;
 
+  /* This is compensate for CTTS */
+  GstClockTime dts_adjustment;
+
   /* store the first timestamp for comparing with other streams and
    * know if there are late streams */
   GstClockTime first_ts;
@@ -118,6 +121,7 @@ struct _GstQTPad
   /* all the atom and chunk book-keeping is delegated here
    * unowned/uncounted reference, parent MOOV owns */
   AtomTRAK *trak;
+  SampleTableEntry *trak_ste;
   /* fragmented support */
   /* meta data book-keeping delegated here */
   AtomTRAF *traf;

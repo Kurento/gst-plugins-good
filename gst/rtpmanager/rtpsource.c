@@ -110,7 +110,7 @@ rtp_source_class_init (RTPSourceClass * klass)
    *  'tool'        G_TYPE_STRING  : The name of application or tool
    *  'note'        G_TYPE_STRING  : A notice about the source
    *
-   *  other fields may be present and these represent private items in
+   *  Other fields may be present and these represent private items in
    *  the SDES where the field name is the prefix.
    */
   g_object_class_install_property (gobject_class, PROP_SDES,
@@ -121,25 +121,37 @@ rtp_source_class_init (RTPSourceClass * klass)
   /**
    * RTPSource::stats
    *
-   * The statistics of the source. This property returns a GstStructure with
-   * name application/x-rtp-source-stats with the following fields:
+   * This property returns a GstStructure named application/x-rtp-source-stats with
+   * fields useful for statistics and diagnostics.
    *
-   *  "ssrc"         G_TYPE_UINT     The SSRC of this source
-   *  "internal"     G_TYPE_BOOLEAN  If this source is a source of the session
-   *  "validated"    G_TYPE_BOOLEAN  If the source is validated
-   *  "received-bye" G_TYPE_BOOLEAN  If we received a BYE from this source
-   *  "is-csrc"      G_TYPE_BOOLEAN  If this source was found as CSRC
-   *  "is-sender"    G_TYPE_BOOLEAN  If this source is a sender
+   * Take note of each respective field's units:
+   *
+   * - NTP times are in the appropriate 32-bit or 64-bit fixed-point format
+   *   starting from January 1, 1970 (except for timespans).
+   * - RTP times are in clock rate units (i.e. clock rate = 1 second)
+   *   starting at a random offset.
+   * - For fields indicating packet loss, note that late packets are not considered lost,
+   *   and duplicates are not taken into account. Hence, the loss may be negative
+   *   if there are duplicates.
+   *
+   * The following fields are always present.
+   *
+   *  "ssrc"         G_TYPE_UINT     the SSRC of this source
+   *  "internal"     G_TYPE_BOOLEAN  this source is a source of the session
+   *  "validated"    G_TYPE_BOOLEAN  the source is validated
+   *  "received-bye" G_TYPE_BOOLEAN  we received a BYE from this source
+   *  "is-csrc"      G_TYPE_BOOLEAN  this source was found as CSRC
+   *  "is-sender"    G_TYPE_BOOLEAN  this source is a sender
    *  "seqnum-base"  G_TYPE_INT      first seqnum if known
    *  "clock-rate"   G_TYPE_INT      the clock rate of the media
    *
-   * The following two fields are only present when known.
+   * The following fields are only present when known.
    *
    *  "rtp-from"     G_TYPE_STRING   where we received the last RTP packet from
    *  "rtcp-from"    G_TYPE_STRING   where we received the last RTCP packet from
    *
    * The following fields make sense for internal sources and will only increase
-   * when "is-sender" is TRUE:
+   * when "is-sender" is TRUE.
    *
    *  "octets-sent"  G_TYPE_UINT64   number of bytes we sent
    *  "packets-sent" G_TYPE_UINT64   number of packets we sent
@@ -153,15 +165,15 @@ rtp_source_class_init (RTPSourceClass * klass)
    * Following fields are updated when "is-sender" is TRUE.
    *
    *  "bitrate"      G_TYPE_UINT64   bitrate in bits per second
-   *  "jitter"       G_TYPE_UINT     estimated jitter
+   *  "jitter"       G_TYPE_UINT     estimated jitter (in clock rate units)
    *  "packets-lost" G_TYPE_INT      estimated amount of packets lost
    *
    * The last SR report this source sent. This only updates when "is-sender" is
    * TRUE.
    *
    *  "have-sr"         G_TYPE_BOOLEAN  the source has sent SR
-   *  "sr-ntptime"      G_TYPE_UINT64   ntptime of SR
-   *  "sr-rtptime"      G_TYPE_UINT     rtptime of SR
+   *  "sr-ntptime"      G_TYPE_UINT64   NTP time of SR (in NTP Timestamp Format, 32.32 fixed point)
+   *  "sr-rtptime"      G_TYPE_UINT     RTP time of SR (in clock rate units)
    *  "sr-octet-count"  G_TYPE_UINT     the number of bytes in the SR
    *  "sr-packet-count" G_TYPE_UINT     the number of packets in the SR
    *
@@ -173,9 +185,9 @@ rtp_source_class_init (RTPSourceClass * klass)
    *  "sent-rb-fractionlost"  G_TYPE_UINT     calculated lost fraction
    *  "sent-rb-packetslost"   G_TYPE_INT      lost packets
    *  "sent-rb-exthighestseq" G_TYPE_UINT     last seen seqnum
-   *  "sent-rb-jitter"        G_TYPE_UINT     jitter
-   *  "sent-rb-lsr"           G_TYPE_UINT     last SR time
-   *  "sent-rb-dlsr"          G_TYPE_UINT     delay since last SR
+   *  "sent-rb-jitter"        G_TYPE_UINT     jitter (in clock rate units)
+   *  "sent-rb-lsr"           G_TYPE_UINT     last SR time (in NTP Short Format, 16.16 fixed point)
+   *  "sent-rb-dlsr"          G_TYPE_UINT     delay since last SR (in NTP Short Format, 16.16 fixed point)
    *
    * The following fields are only present for non-internal sources and
    * represents the last RB that this source sent. This is only updated
@@ -185,15 +197,16 @@ rtp_source_class_init (RTPSourceClass * klass)
    *  "rb-fractionlost"  G_TYPE_UINT     lost fraction
    *  "rb-packetslost"   G_TYPE_INT      lost packets
    *  "rb-exthighestseq" G_TYPE_UINT     highest received seqnum
-   *  "rb-jitter"        G_TYPE_UINT     reception jitter
-   *  "rb-lsr"           G_TYPE_UINT     last SR time
-   *  "rb-dlsr"          G_TYPE_UINT     delay since last SR
+   *  "rb-jitter"        G_TYPE_UINT     reception jitter (in clock rate units)
+   *  "rb-lsr"           G_TYPE_UINT     last SR time (in NTP Short Format, 16.16 fixed point)
+   *  "rb-dlsr"          G_TYPE_UINT     delay since last SR (in NTP Short Format, 16.16 fixed point)
    *
-   * The round trip of this source. This is calculated from the last RB
-   * values and the recption time of the last RB packet. Only present for
+   * The round trip of this source is calculated from the last RB
+   * values and the reception time of the last RB packet. It is only present for
    * non-internal sources.
    *
-   *  "rb-round-trip"    G_TYPE_UINT     the round trip time in nanoseconds
+   *  "rb-round-trip"    G_TYPE_UINT     the round-trip time (in NTP Short Format, 16.16 fixed point)
+   *
    */
   g_object_class_install_property (gobject_class, PROP_STATS,
       g_param_spec_boxed ("stats", "Stats",
@@ -1203,12 +1216,14 @@ rtp_source_send_rtp (RTPSource * src, RTPPacketInfo * pinfo)
   /* we are a sender now */
   src->is_sender = TRUE;
 
+  /* we are also a receiver of our packets */
+  if (!update_receiver_stats (src, pinfo))
+    return GST_FLOW_OK;
+
   /* update stats for the SR */
   src->stats.packets_sent += pinfo->packets;
   src->stats.octets_sent += pinfo->payload_len;
   src->bytes_sent += pinfo->payload_len;
-  /* we are also a receiver of our packets */
-  update_receiver_stats (src, pinfo);
 
   running_time = pinfo->running_time;
 
@@ -1262,10 +1277,10 @@ no_callback:
  * rtp_source_process_sr:
  * @src: an #RTPSource
  * @time: time of packet arrival
- * @ntptime: the NTP time in 32.32 fixed point
- * @rtptime: the RTP time
+ * @ntptime: the NTP time (in NTP Timestamp Format, 32.32 fixed point)
+ * @rtptime: the RTP time (in clock rate units)
  * @packet_count: the packet count
- * @octet_count: the octect count
+ * @octet_count: the octet count
  *
  * Update the sender report in @src.
  */
@@ -1309,11 +1324,13 @@ rtp_source_process_sr (RTPSource * src, GstClockTime time, guint64 ntptime,
  * @src: an #RTPSource
  * @ntpnstime: the current time in nanoseconds since 1970
  * @fractionlost: fraction lost since last SR/RR
- * @packetslost: the cumululative number of packets lost
+ * @packetslost: the cumulative number of packets lost
  * @exthighestseq: the extended last sequence number received
- * @jitter: the interarrival jitter
- * @lsr: the last SR packet from this source
- * @dlsr: the delay since last SR packet
+ * @jitter: the interarrival jitter (in clock rate units)
+ * @lsr: the time of the last SR packet on this source
+ *   (in NTP Short Format, 16.16 fixed point)
+ * @dlsr: the delay since the last SR packet
+ *   (in NTP Short Format, 16.16 fixed point)
  *
  * Update the report block in @src.
  */
@@ -1369,17 +1386,17 @@ rtp_source_process_rb (RTPSource * src, guint64 ntpnstime,
  * rtp_source_get_new_sr:
  * @src: an #RTPSource
  * @ntpnstime: the current time in nanoseconds since 1970
- * @running_time: the current running_time of the pipeline.
- * @ntptime: the NTP time in 32.32 fixed point
- * @rtptime: the RTP time corresponding to @ntptime
+ * @running_time: the current running_time of the pipeline
+ * @ntptime: the NTP time (in NTP Timestamp Format, 32.32 fixed point)
+ * @rtptime: the RTP time corresponding to @ntptime (in clock rate units)
  * @packet_count: the packet count
- * @octet_count: the octect count
+ * @octet_count: the octet count
  *
  * Get new values to put into a new SR report from this source.
  *
  * @running_time and @ntpnstime are captured at the same time and represent the
  * running time of the pipeline clock and the absolute current system time in
- * nanoseconds respectively. Together with the last running_time and rtp timestamp
+ * nanoseconds respectively. Together with the last running_time and RTP timestamp
  * we have observed in the source, we can generate @ntptime and @rtptime for an SR
  * packet. @ntptime is basically the fixed point representation of @ntpnstime
  * and @rtptime the associated RTP timestamp.
@@ -1457,11 +1474,13 @@ rtp_source_get_new_sr (RTPSource * src, guint64 ntpnstime,
  * @src: an #RTPSource
  * @time: the current time of the system clock
  * @fractionlost: fraction lost since last SR/RR
- * @packetslost: the cumululative number of packets lost
+ * @packetslost: the cumulative number of packets lost
  * @exthighestseq: the extended last sequence number received
- * @jitter: the interarrival jitter
- * @lsr: the last SR packet from this source
- * @dlsr: the delay since last SR packet
+ * @jitter: the interarrival jitter (in clock rate units)
+ * @lsr: the time of the last SR packet on this source
+ *   (in NTP Short Format, 16.16 fixed point)
+ * @dlsr: the delay since the last SR packet
+ *   (in NTP Short Format, 16.16 fixed point)
  *
  * Get new values to put into a new report block from this source.
  *
@@ -1547,10 +1566,10 @@ rtp_source_get_new_rb (RTPSource * src, GstClockTime time,
  * rtp_source_get_last_sr:
  * @src: an #RTPSource
  * @time: time of packet arrival
- * @ntptime: the NTP time in 32.32 fixed point
- * @rtptime: the RTP time
+ * @ntptime: the NTP time (in NTP Timestamp Format, 32.32 fixed point)
+ * @rtptime: the RTP time (in clock rate units)
  * @packet_count: the packet count
- * @octet_count: the octect count
+ * @octet_count: the octet count
  *
  * Get the values of the last sender report as set with rtp_source_process_sr().
  *
@@ -1586,12 +1605,15 @@ rtp_source_get_last_sr (RTPSource * src, GstClockTime * time, guint64 * ntptime,
  * rtp_source_get_last_rb:
  * @src: an #RTPSource
  * @fractionlost: fraction lost since last SR/RR
- * @packetslost: the cumululative number of packets lost
+ * @packetslost: the cumulative number of packets lost
  * @exthighestseq: the extended last sequence number received
- * @jitter: the interarrival jitter
- * @lsr: the last SR packet from this source
- * @dlsr: the delay since last SR packet
- * @round_trip: the round trip time
+ * @jitter: the interarrival jitter (in clock rate units)
+ * @lsr: the time of the last SR packet on this source
+ *   (in NTP Short Format, 16.16 fixed point)
+ * @dlsr: the delay since the last SR packet
+ *   (in NTP Short Format, 16.16 fixed point)
+ * @round_trip: the round-trip time
+ *   (in NTP Short Format, 16.16 fixed point)
  *
  * Get the values of the last RB report set with rtp_source_process_rb().
  *
@@ -1744,7 +1766,7 @@ rtp_source_timeout (RTPSource * src, GstClockTime current_time,
 
   /* Time out AVPF packets that are older than the desired length */
   while ((pkt = g_queue_peek_tail (src->retained_feedback)) &&
-      GST_BUFFER_TIMESTAMP (pkt) < feedback_retention_window)
+      GST_BUFFER_PTS (pkt) < feedback_retention_window)
     gst_buffer_unref (g_queue_pop_tail (src->retained_feedback));
 }
 
@@ -1754,7 +1776,7 @@ compare_buffers (gconstpointer a, gconstpointer b, gpointer user_data)
   const GstBuffer *bufa = a;
   const GstBuffer *bufb = b;
 
-  return GST_BUFFER_TIMESTAMP (bufa) - GST_BUFFER_TIMESTAMP (bufb);
+  return GST_BUFFER_PTS (bufa) - GST_BUFFER_PTS (bufb);
 }
 
 void
@@ -1766,7 +1788,7 @@ rtp_source_retain_rtcp_packet (RTPSource * src, GstRTCPPacket * packet,
   buffer = gst_buffer_copy_region (packet->rtcp->buffer, GST_BUFFER_COPY_MEMORY,
       packet->offset, (gst_rtcp_packet_get_length (packet) + 1) * 4);
 
-  GST_BUFFER_TIMESTAMP (buffer) = running_time;
+  GST_BUFFER_PTS (buffer) = running_time;
 
   g_queue_insert_sorted (src->retained_feedback, buffer, compare_buffers, NULL);
 }

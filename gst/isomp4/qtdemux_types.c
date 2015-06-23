@@ -146,6 +146,7 @@ static const QtNodeType qt_node_types[] = {
   {FOURCC_rdrf, "rdrf", 0,},
   {FOURCC__gen, "Custom Genre", QT_FLAG_CONTAINER,},
   {FOURCC_ctts, "Composition time to sample", 0, qtdemux_dump_ctts},
+  {FOURCC_cslg, "Composition Shift Least Greatest", 0, qtdemux_dump_cslg},
   {FOURCC_XiTh, "XiTh", 0},
   {FOURCC_XdxT, "XdxT", 0},
   {FOURCC_loci, "loci", 0},
@@ -184,6 +185,10 @@ static const QtNodeType qt_node_types[] = {
   {FOURCC_frma, "Audio codec format", 0},
   {FOURCC_name, "name", 0},
   {FOURCC_mean, "mean", 0},
+  {FOURCC_svmi, "Stereoscopic Video Media Information", 0,
+      qtdemux_dump_svmi},
+  {FOURCC_scdi, "Stereoscopic Camera and Display Information", 0,
+      qtdemux_dump_unknown},
   {0, "unknown", 0,},
 };
 

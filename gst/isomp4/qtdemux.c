@@ -127,7 +127,7 @@ struct _QtDemuxSample
 /* timestamp is the DTS */
 #define QTSAMPLE_DTS(stream,sample) (QTSTREAMTIME_TO_GSTTIME((stream), (sample)->timestamp))
 /* timestamp + offset is the PTS */
-#define QTSAMPLE_PTS(stream,sample) (QTSTREAMTIME_TO_GSTTIME((stream), (sample)->timestamp + (sample)->pts_offset))
+#define QTSAMPLE_PTS(stream,sample) (QTSTREAMTIME_TO_GSTTIME((stream), (sample)->timestamp + (stream)->cslg_shift + (sample)->pts_offset))
 /* timestamp + duration - dts is the duration */
 #define QTSAMPLE_DUR_DTS(stream, sample, dts) (QTSTREAMTIME_TO_GSTTIME ((stream), (sample)->timestamp + (sample)->duration) - (dts))
 
@@ -376,6 +376,9 @@ struct _QtDemuxStream
   guint32 ctts_count;
   gint32 ctts_soffset;
 
+  /* cslg */
+  guint32 cslg_shift;
+
   /* fragmented */
   gboolean parsed_trex;
   guint32 def_sample_duration;
@@ -383,6 +386,10 @@ struct _QtDemuxStream
   guint32 def_sample_flags;
 
   gboolean disabled;
+
+  /* stereoscopic video streams */
+  GstVideoMultiviewMode multiview_mode;
+  GstVideoMultiviewFlags multiview_flags;
 };
 
 enum QtDemuxState
@@ -1432,11 +1439,15 @@ gst_qtdemux_perform_seek (GstQTDemux * qtdemux, GstSegment * segment,
   }
   segment->position = desired_offset;
   segment->time = desired_offset;
-  segment->start = desired_offset;
+  if (segment->rate >= 0) {
+    segment->start = desired_offset;
 
-  /* we stop at the end */
-  if (segment->stop == -1)
-    segment->stop = segment->duration;
+    /* we stop at the end */
+    if (segment->stop == -1)
+      segment->stop = segment->duration;
+  } else {
+    segment->stop = desired_offset;
+  }
 
   if (qtdemux->fragmented)
     qtdemux->fragmented_seek_pending = TRUE;
@@ -1740,6 +1751,8 @@ _create_stream (void)
   stream->sample_index = -1;
   stream->offset_in_sample = 0;
   stream->new_stream = TRUE;
+  stream->multiview_mode = GST_VIDEO_MULTIVIEW_MODE_NONE;
+  stream->multiview_flags = GST_VIDEO_MULTIVIEW_FLAGS_NONE;
   return stream;
 }
 
@@ -3739,10 +3752,12 @@ gst_qtdemux_activate_segment (GstQTDemux * qtdemux, QtDemuxStream * stream,
   stream->segment.base = qtdemux->segment.base;
   stream->segment.applied_rate = qtdemux->segment.applied_rate;
   stream->segment.rate = rate;
-  stream->segment.start = start;
-  stream->segment.stop = stop;
+  stream->segment.start = start + QTSTREAMTIME_TO_GSTTIME (stream,
+      stream->cslg_shift);
+  stream->segment.stop = stop + QTSTREAMTIME_TO_GSTTIME (stream,
+      stream->cslg_shift);
   stream->segment.time = time;
-  stream->segment.position = start;
+  stream->segment.position = stream->segment.start;
 
   /* now prepare and send the segment */
   if (stream->pad) {
@@ -6270,8 +6285,12 @@ gst_qtdemux_configure_stream (GstQTDemux * qtdemux, QtDemuxStream * stream)
       GST_DEBUG_OBJECT (qtdemux,
           "video size %dx%d, target display size %dx%d", stream->width,
           stream->height, stream->display_width, stream->display_height);
-
-      if (stream->display_width > 0 && stream->display_height > 0 &&
+      /* qt file might have pasp atom */
+      if (stream->par_w > 0 && stream->par_h > 0) {
+        GST_DEBUG_OBJECT (qtdemux, "par %d:%d", stream->par_w, stream->par_h);
+        gst_caps_set_simple (stream->caps, "pixel-aspect-ratio",
+            GST_TYPE_FRACTION, stream->par_w, stream->par_h, NULL);
+      } else if (stream->display_width > 0 && stream->display_height > 0 &&
           stream->width > 0 && stream->height > 0) {
         gint n, d;
 
@@ -6281,18 +6300,35 @@ gst_qtdemux_configure_stream (GstQTDemux * qtdemux, QtDemuxStream * stream)
         if (n == d)
           n = d = 1;
         GST_DEBUG_OBJECT (qtdemux, "setting PAR to %d/%d", n, d);
-        gst_caps_set_simple (stream->caps, "pixel-aspect-ratio",
-            GST_TYPE_FRACTION, n, d, NULL);
-      }
-
-      /* qt file might have pasp atom */
-      if (stream->par_w > 0 && stream->par_h > 0) {
-        GST_DEBUG_OBJECT (qtdemux, "par %d:%d", stream->par_w, stream->par_h);
+        stream->par_w = n;
+        stream->par_h = d;
         gst_caps_set_simple (stream->caps, "pixel-aspect-ratio",
             GST_TYPE_FRACTION, stream->par_w, stream->par_h, NULL);
       }
+
+      if (stream->multiview_mode != GST_VIDEO_MULTIVIEW_MODE_NONE) {
+        guint par_w = 1, par_h = 1;
+
+        if (stream->par_w > 0 && stream->par_h > 0) {
+          par_w = stream->par_w;
+          par_h = stream->par_h;
+        }
+
+        if (gst_video_multiview_guess_half_aspect (stream->multiview_mode,
+                stream->width, stream->height, par_w, par_h)) {
+          stream->multiview_flags |= GST_VIDEO_MULTIVIEW_FLAGS_HALF_ASPECT;
+        }
+
+        gst_caps_set_simple (stream->caps,
+            "multiview-mode", G_TYPE_STRING,
+            gst_video_multiview_mode_to_caps_string (stream->multiview_mode),
+            "multiview-flags", GST_TYPE_VIDEO_MULTIVIEW_FLAGSET,
+            stream->multiview_flags, GST_FLAG_SET_MASK_EXACT, NULL);
+      }
     }
-  } else if (stream->subtype == FOURCC_soun) {
+  }
+
+  else if (stream->subtype == FOURCC_soun) {
     if (stream->caps) {
       stream->caps = gst_caps_make_writable (stream->caps);
       if (stream->rate > 0)
@@ -6728,11 +6764,12 @@ qtdemux_stbl_init (GstQTDemux * qtdemux, QtDemuxStream * stream, GNode * stbl)
     return FALSE;
   }
 
-
   /* composition time-to-sample */
   if ((stream->ctts_present =
           ! !qtdemux_tree_get_child_by_type_full (stbl, FOURCC_ctts,
               &stream->ctts) ? TRUE : FALSE) == TRUE) {
+    GstByteReader cslg = GST_BYTE_READER_INIT (NULL, 0);
+
     /* copy atom data into a new buffer for later use */
     stream->ctts.data = g_memdup (stream->ctts.data, stream->ctts.size);
 
@@ -6746,6 +6783,46 @@ qtdemux_stbl_init (GstQTDemux * qtdemux, QtDemuxStream * stream, GNode * stbl)
     if (!qt_atom_parser_has_chunks (&stream->ctts, stream->n_composition_times,
             4 + 4))
       goto corrupt_file;
+
+    /* This is optional, if missing we iterate the ctts */
+    if (qtdemux_tree_get_child_by_type_full (stbl, FOURCC_cslg, &cslg)) {
+      if (!gst_byte_reader_skip (&cslg, 1 + 3)
+          || !gst_byte_reader_get_uint32_be (&cslg, &stream->cslg_shift)) {
+        g_free ((gpointer) cslg.data);
+        goto corrupt_file;
+      }
+    } else {
+      gint32 cslg_least = 0;
+      guint num_entries, pos;
+      gint i;
+
+      pos = gst_byte_reader_get_pos (&stream->ctts);
+      num_entries = stream->n_composition_times;
+
+      stream->cslg_shift = 0;
+
+      for (i = 0; i < num_entries; i++) {
+        gint32 offset;
+
+        gst_byte_reader_skip_unchecked (&stream->ctts, 4);
+        offset = gst_byte_reader_get_int32_be_unchecked (&stream->ctts);
+
+        if (offset < cslg_least)
+          cslg_least = offset;
+      }
+
+      if (cslg_least < 0)
+        stream->cslg_shift = ABS (cslg_least);
+      else
+        stream->cslg_shift = 0;
+
+      /* reset the reader so we can generate sample table */
+      gst_byte_reader_set_pos (&stream->ctts, pos);
+    }
+  } else {
+    /* Ensure the cslg_shift value is consistent so we can use it
+     * unconditionnally to produce TS and Segment */
+    stream->cslg_shift = 0;
   }
 
   return TRUE;
@@ -7690,6 +7767,7 @@ qtdemux_parse_trak (GstQTDemux * qtdemux, GNode * trak)
   GNode *pasp;
   GNode *tref;
   GNode *udta;
+  GNode *svmi;
 
   QtDemuxStream *stream = NULL;
   gboolean new_stream = FALSE;
@@ -7844,6 +7922,51 @@ qtdemux_parse_trak (GstQTDemux * qtdemux, GNode * trak)
 
   if (!(stbl = qtdemux_tree_get_child_by_type (minf, FOURCC_stbl)))
     goto corrupt_file;
+
+  /*parse svmi header if existing */
+  svmi = qtdemux_tree_get_child_by_type (stbl, FOURCC_svmi);
+  if (svmi) {
+    len = QT_UINT32 ((guint8 *) svmi->data);
+    version = QT_UINT32 ((guint8 *) svmi->data + 8);
+    if (!version) {
+      GstVideoMultiviewMode mode = GST_VIDEO_MULTIVIEW_MODE_NONE;
+      GstVideoMultiviewFlags flags = GST_VIDEO_MULTIVIEW_FLAGS_NONE;
+      guint8 frame_type, frame_layout;
+
+      /* MPEG-A stereo video */
+      if (qtdemux->major_brand == FOURCC_ss02)
+        flags |= GST_VIDEO_MULTIVIEW_FLAGS_MIXED_MONO;
+
+      frame_type = QT_UINT8 ((guint8 *) svmi->data + 12);
+      frame_layout = QT_UINT8 ((guint8 *) svmi->data + 13) & 0x01;
+      switch (frame_type) {
+        case 0:
+          mode = GST_VIDEO_MULTIVIEW_MODE_SIDE_BY_SIDE;
+          break;
+        case 1:
+          mode = GST_VIDEO_MULTIVIEW_MODE_ROW_INTERLEAVED;
+          break;
+        case 2:
+          mode = GST_VIDEO_MULTIVIEW_MODE_FRAME_BY_FRAME;
+          break;
+        case 3:
+          /* mode 3 is primary/secondary view sequence, ie
+           * left/right views in separate tracks. See section 7.2
+           * of ISO/IEC 23000-11:2009 */
+          GST_FIXME_OBJECT (qtdemux,
+              "Implement stereo video in separate streams");
+      }
+
+      if ((frame_layout & 0x1) == 0)
+        flags |= GST_VIDEO_MULTIVIEW_FLAGS_RIGHT_VIEW_FIRST;
+
+      GST_LOG_OBJECT (qtdemux,
+          "StereoVideo: composition type: %u, is_left_first: %u",
+          frame_type, frame_layout);
+      stream->multiview_mode = mode;
+      stream->multiview_flags = flags;
+    }
+  }
 
   /* parse stsd */
   if (!(stsd = qtdemux_tree_get_child_by_type (stbl, FOURCC_stsd)))
@@ -11562,6 +11685,7 @@ qtdemux_video_caps (GstQTDemux * qtdemux, QtDemuxStream * stream,
 
     gst_video_info_init (&info);
     gst_video_info_set_format (&info, format, stream->width, stream->height);
+
     caps = gst_video_info_to_caps (&info);
     *codec_name = gst_pb_utils_get_codec_description (caps);
 

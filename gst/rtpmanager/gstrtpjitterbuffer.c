@@ -899,6 +899,8 @@ alloc_item (gpointer data, guint type, GstClockTime dts, GstClockTime pts,
 static void
 free_item (RTPJitterBufferItem * item)
 {
+  g_return_if_fail (item != NULL);
+
   if (item->data && item->type != ITEM_TYPE_QUERY)
     gst_mini_object_unref (item->data);
   g_slice_free (RTPJitterBufferItem, item);
@@ -2715,10 +2717,12 @@ compute_elapsed (GstRtpJitterBuffer * jitterbuffer, RTPJitterBufferItem * item)
   GST_LOG_OBJECT (jitterbuffer, "rtp %" G_GUINT32_FORMAT ", ext %"
       G_GUINT64_FORMAT, rtp_time, priv->ext_timestamp);
 
-  if (rtp_time < priv->ext_timestamp) {
+  ext_time = priv->ext_timestamp;
+  ext_time = gst_rtp_buffer_ext_timestamp (&ext_time, rtp_time);
+  if (ext_time < priv->ext_timestamp) {
     ext_time = priv->ext_timestamp;
   } else {
-    ext_time = gst_rtp_buffer_ext_timestamp (&priv->ext_timestamp, rtp_time);
+    priv->ext_timestamp = ext_time;
   }
 
   if (ext_time > priv->clock_base)
@@ -3408,8 +3412,7 @@ gst_rtp_jitter_buffer_loop (GstRtpJitterBuffer * jitterbuffer)
       JBUF_WAIT_EVENT (priv, flushing);
       result = GST_FLOW_OK;
     }
-  }
-  while (result == GST_FLOW_OK);
+  } while (result == GST_FLOW_OK);
   /* store result for upstream */
   priv->srcresult = result;
   /* if we get here we need to pause */
