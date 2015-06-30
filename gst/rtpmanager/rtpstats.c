@@ -81,6 +81,27 @@ gst_rtp_packet_rate_ctx_get (RTPPacketRateCtx * ctx)
   return ctx->avg_packet_rate;
 }
 
+guint32
+gst_rtp_packet_rate_ctx_get_max_dropout (RTPPacketRateCtx * ctx, gint32 time_ms)
+{
+  if (time_ms <= 0 || !ctx->probed) {
+    return RTP_DEF_DROPOUT;
+  }
+
+  return MAX (RTP_MIN_DROPOUT, ctx->avg_packet_rate * time_ms / 1000);
+}
+
+guint32
+gst_rtp_packet_rate_ctx_get_max_misorder (RTPPacketRateCtx * ctx,
+    gint32 time_ms)
+{
+  if (time_ms <= 0 || !ctx->probed) {
+    return RTP_DEF_MISORDER;
+  }
+
+  return MAX (RTP_MIN_MISORDER, ctx->avg_packet_rate * time_ms / 1000);
+}
+
 /**
  * rtp_stats_init_defaults:
  * @stats: an #RTPSessionStats struct
