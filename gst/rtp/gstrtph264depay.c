@@ -26,7 +26,9 @@
 
 #include <gst/base/gstbitreader.h>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 #include "gstrtph264depay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtph264depay_debug);
 #define GST_CAT_DEFAULT (rtph264depay_debug)
@@ -764,11 +766,17 @@ gst_rtp_h264_depay_handle_nal (GstRtpH264Depay * rtph264depay, GstBuffer * nal,
     /* prepend codec_data */
     if (rtph264depay->codec_data) {
       GST_DEBUG_OBJECT (depayload, "prepending codec_data");
+      gst_rtp_copy_meta (GST_ELEMENT_CAST (rtph264depay),
+          rtph264depay->codec_data, outbuf,
+          g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
       outbuf = gst_buffer_append (rtph264depay->codec_data, outbuf);
       rtph264depay->codec_data = NULL;
       out_keyframe = TRUE;
     }
     outbuf = gst_buffer_make_writable (outbuf);
+
+    gst_rtp_drop_meta (GST_ELEMENT_CAST (rtph264depay), outbuf,
+        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
 
     GST_BUFFER_PTS (outbuf) = out_timestamp;
 
@@ -944,6 +952,9 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
           memcpy (map.data + sizeof (sync_bytes), payload, nalu_size);
           gst_buffer_unmap (outbuf, &map);
 
+          gst_rtp_copy_meta (GST_ELEMENT_CAST (rtph264depay), outbuf, buf,
+              g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
+
           outbuf =
               gst_rtp_h264_depay_handle_nal (rtph264depay, outbuf, timestamp,
               marker);
@@ -1027,6 +1038,9 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
           map.data[sizeof (sync_bytes)] = nal_header;
           gst_buffer_unmap (outbuf, &map);
 
+          gst_rtp_copy_meta (GST_ELEMENT_CAST (rtph264depay), outbuf, buf,
+              g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
+
           GST_DEBUG_OBJECT (rtph264depay, "queueing %d bytes", outsize);
 
           /* and assemble in the adapter */
@@ -1039,6 +1053,9 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
           outsize = payload_len;
           outbuf = gst_buffer_new_and_alloc (outsize);
           gst_buffer_fill (outbuf, 0, payload, outsize);
+
+          gst_rtp_copy_meta (GST_ELEMENT_CAST (rtph264depay), outbuf, buf,
+              g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
 
           GST_DEBUG_OBJECT (rtph264depay, "queueing %d bytes", outsize);
 
@@ -1074,6 +1091,9 @@ gst_rtp_h264_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
         }
         memcpy (map.data + sizeof (sync_bytes), payload, nalu_size);
         gst_buffer_unmap (outbuf, &map);
+
+        gst_rtp_copy_meta (GST_ELEMENT_CAST (rtph264depay), outbuf, buf,
+            g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
 
         outbuf = gst_rtp_h264_depay_handle_nal (rtph264depay, outbuf, timestamp,
             marker);

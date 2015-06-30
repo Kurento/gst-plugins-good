@@ -25,6 +25,7 @@
 #include <stdlib.h>
 
 #include "gstrtpgstdepay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpgstdepay_debug);
 #define GST_CAT_DEFAULT (rtpgstdepay_debug)
@@ -526,6 +527,10 @@ gst_rtp_gst_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
     }
   }
   gst_rtp_buffer_unmap (&rtp);
+
+  if (outbuf) {
+    gst_rtp_drop_meta (GST_ELEMENT_CAST (rtpgstdepay), outbuf, 0);
+  }
 
   return outbuf;
 
