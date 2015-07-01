@@ -69,6 +69,8 @@ struct _GstRtpBin {
   GstClockTime    buffer_start;
   gboolean        do_retransmission;
   GstRTPProfile   rtp_profile;
+  guint32         max_dropout_time;
+  guint32         max_misorder_time;
 
   /* a list of session */
   GSList         *sessions;
