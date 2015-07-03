@@ -29,7 +29,7 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 -v filesrc location=/path/to/file ! decodebin2 ! videoconvert ! deinterlace ! videoconvert ! autovideosink
+ * gst-launch-1.0 -v filesrc location=/path/to/file ! decodebin ! videoconvert ! deinterlace ! videoconvert ! autovideosink
  * ]| This pipeline deinterlaces a video file with the default deinterlacing options.
  * </refsect2>
  */
@@ -1500,9 +1500,7 @@ gst_deinterlace_output_frame (GstDeinterlace * self, gboolean flushing)
 
 restart:
   ret = GST_FLOW_OK;
-  fields_required = 0;
   hl_no_lock = FALSE;
-  same_buffer = FALSE;
   flush_one = FALSE;
   self->need_more = FALSE;
   phase = self->pattern_phase;

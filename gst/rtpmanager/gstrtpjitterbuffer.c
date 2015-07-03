@@ -2039,12 +2039,13 @@ update_timers (GstRtpJitterBuffer * jitterbuffer, guint16 seqnum,
     delay = get_rtx_delay (priv);
 
     /* and update/install timer for next seqnum */
-    if (timer)
+    if (timer) {
       reschedule_timer (jitterbuffer, timer, priv->next_in_seqnum, expected,
           delay, TRUE);
-    else
+    } else {
       add_timer (jitterbuffer, TIMER_TYPE_EXPECTED, priv->next_in_seqnum, 0,
           expected, delay, priv->packet_spacing);
+    }
   } else if (timer && timer->type != TIMER_TYPE_DEADLINE) {
     /* if we had a timer, remove it, we don't know when to expect the next
      * packet. */
@@ -2465,7 +2466,20 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
         }
       } else {
         /* new packet, we are missing some packets */
-        if (G_UNLIKELY (gap >= RTP_MAX_DROPOUT)) {
+        if (G_UNLIKELY (priv->timers->len >= RTP_MAX_DROPOUT)) {
+          /* If we have timers for more than RTP_MAX_DROPOUT packets
+           * pending this means that we have a huge gap overall. We can
+           * reset the jitterbuffer at this point because there's
+           * just too much data missing to be able to do anything
+           * sensible with the past data. Just try again from the
+           * next packet */
+          GST_WARNING_OBJECT (jitterbuffer,
+              "%d pending timers > %d - resetting", priv->timers->len,
+              RTP_MAX_DROPOUT);
+          reset = TRUE;
+          gst_buffer_unref (buffer);
+          buffer = NULL;
+        } else if (G_UNLIKELY (gap >= RTP_MAX_DROPOUT)) {
           reset =
               handle_big_gap_buffer (jitterbuffer, TRUE, buffer, pt, seqnum,
               gap);
@@ -2941,30 +2955,31 @@ static GstFlowReturn
 handle_next_buffer (GstRtpJitterBuffer * jitterbuffer)
 {
   GstRtpJitterBufferPrivate *priv = jitterbuffer->priv;
-  GstFlowReturn result = GST_FLOW_OK;
+  GstFlowReturn result;
   RTPJitterBufferItem *item;
   guint seqnum;
   guint32 next_seqnum;
-  gint gap;
 
   /* only push buffers when PLAYING and active and not buffering */
   if (priv->blocked || !priv->active ||
-      rtp_jitter_buffer_is_buffering (priv->jbuf))
+      rtp_jitter_buffer_is_buffering (priv->jbuf)) {
     return GST_FLOW_WAIT;
+  }
 
-again:
   /* peek a buffer, we're just looking at the sequence number.
    * If all is fine, we'll pop and push it. If the sequence number is wrong we
    * wait for a timeout or something to change.
    * The peeked buffer is valid for as long as we hold the jitterbuffer lock. */
   item = rtp_jitter_buffer_peek (priv->jbuf);
-  if (item == NULL)
+  if (item == NULL) {
     goto wait;
+  }
 
   /* get the seqnum and the next expected seqnum */
   seqnum = item->seqnum;
-  if (seqnum == -1)
-    goto do_push;
+  if (seqnum == -1) {
+    return pop_and_push_next (jitterbuffer, seqnum);
+  }
 
   next_seqnum = priv->next_seqnum;
 
@@ -2977,22 +2992,19 @@ again:
      * fires, so wait for that */
     result = GST_FLOW_WAIT;
   } else {
-    /* else calculate GAP */
-    gap = gst_rtp_buffer_compare_seqnum (next_seqnum, seqnum);
+    gint gap = gst_rtp_buffer_compare_seqnum (next_seqnum, seqnum);
 
     if (G_LIKELY (gap == 0)) {
-    do_push:
       /* no missing packet, pop and push */
       result = pop_and_push_next (jitterbuffer, seqnum);
     } else if (G_UNLIKELY (gap < 0)) {
-      RTPJitterBufferItem *item;
       /* if we have a packet that we already pushed or considered dropped, pop it
        * off and get the next packet */
       GST_DEBUG_OBJECT (jitterbuffer, "Old packet #%d, next #%d dropping",
           seqnum, next_seqnum);
       item = rtp_jitter_buffer_pop (priv->jbuf, NULL);
       free_item (item);
-      goto again;
+      result = GST_FLOW_OK;
     } else {
       /* the chain function has scheduled timers to request retransmission or
        * when to consider the packet lost, wait for that */
@@ -3002,16 +3014,17 @@ again:
       result = GST_FLOW_WAIT;
     }
   }
+
   return result;
 
 wait:
   {
     GST_DEBUG_OBJECT (jitterbuffer, "no buffer, going to wait");
-    if (priv->eos)
-      result = GST_FLOW_EOS;
-    else
-      result = GST_FLOW_WAIT;
-    return result;
+    if (priv->eos) {
+      return GST_FLOW_EOS;
+    } else {
+      return GST_FLOW_WAIT;
+    }
   }
 }
 
@@ -3277,6 +3290,19 @@ wait_next_timeout (GstRtpJitterBuffer * jitterbuffer)
     GstClockTime timer_timeout = -1;
     gint i, len;
 
+    /* If we have a clock, update "now" now with the very latest running time
+     * we have. It is used below when timeouts are triggered to calculate
+     * any next possible timeout. If we only update it after waiting for the
+     * clock, we would give a too old time to the timeout functions.
+     */
+    GST_OBJECT_LOCK (jitterbuffer);
+    if (GST_ELEMENT_CLOCK (jitterbuffer)) {
+      now =
+          gst_clock_get_time (GST_ELEMENT_CLOCK (jitterbuffer)) -
+          GST_ELEMENT_CAST (jitterbuffer)->base_time;
+    }
+    GST_OBJECT_UNLOCK (jitterbuffer);
+
     GST_DEBUG_OBJECT (jitterbuffer, "now %" GST_TIME_FORMAT,
         GST_TIME_ARGS (now));
 
@@ -3370,7 +3396,6 @@ wait_next_timeout (GstRtpJitterBuffer * jitterbuffer)
       }
 
       if (ret != GST_CLOCK_UNSCHEDULED) {
-        now = timer_timeout + MAX (clock_jitter, 0);
         GST_DEBUG_OBJECT (jitterbuffer, "sync done, %d, #%d, %" G_GINT64_FORMAT,
             ret, priv->timer_seqnum, clock_jitter);
       } else {
