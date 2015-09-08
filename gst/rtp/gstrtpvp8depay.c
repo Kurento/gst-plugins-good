@@ -23,6 +23,7 @@
 #endif
 
 #include "gstrtpvp8depay.h"
+#include "gstrtputils.h"
 
 #include <gst/video/video.h>
 
@@ -33,7 +34,7 @@ GST_DEBUG_CATEGORY_STATIC (gst_rtp_vp8_depay_debug);
 
 static void gst_rtp_vp8_depay_dispose (GObject * object);
 static GstBuffer *gst_rtp_vp8_depay_process (GstRTPBaseDepayload * depayload,
-    GstBuffer * buf);
+    GstRTPBuffer * rtp);
 static GstStateChangeReturn gst_rtp_vp8_depay_change_state (GstElement *
     element, GstStateChange transition);
 static gboolean gst_rtp_vp8_depay_handle_event (GstRTPBaseDepayload * depay,
@@ -86,7 +87,7 @@ gst_rtp_vp8_depay_class_init (GstRtpVP8DepayClass * gst_rtp_vp8_depay_class)
 
   element_class->change_state = gst_rtp_vp8_depay_change_state;
 
-  depay_class->process = gst_rtp_vp8_depay_process;
+  depay_class->process_rtp_packet = gst_rtp_vp8_depay_process;
   depay_class->handle_event = gst_rtp_vp8_depay_handle_event;
 
   GST_DEBUG_CATEGORY_INIT (gst_rtp_vp8_depay_debug, "rtpvp8depay", 0,
@@ -109,29 +110,27 @@ gst_rtp_vp8_depay_dispose (GObject * object)
 }
 
 static GstBuffer *
-gst_rtp_vp8_depay_process (GstRTPBaseDepayload * depay, GstBuffer * buf)
+gst_rtp_vp8_depay_process (GstRTPBaseDepayload * depay, GstRTPBuffer * rtp)
 {
   GstRtpVP8Depay *self = GST_RTP_VP8_DEPAY (depay);
   GstBuffer *payload;
   guint8 *data;
   guint hdrsize;
   guint size;
-  GstRTPBuffer rtpbuffer = GST_RTP_BUFFER_INIT;
 
-  if (G_UNLIKELY (GST_BUFFER_IS_DISCONT (buf))) {
+  if (G_UNLIKELY (GST_BUFFER_IS_DISCONT (rtp->buffer))) {
     GST_LOG_OBJECT (self, "Discontinuity, flushing adapter");
     gst_adapter_clear (self->adapter);
     self->started = FALSE;
   }
 
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtpbuffer);
-  size = gst_rtp_buffer_get_payload_len (&rtpbuffer);
+  size = gst_rtp_buffer_get_payload_len (rtp);
 
   /* At least one header and one vp8 byte */
   if (G_UNLIKELY (size < 2))
     goto too_small;
 
-  data = gst_rtp_buffer_get_payload (&rtpbuffer);
+  data = gst_rtp_buffer_get_payload (rtp);
 
   if (G_UNLIKELY (!self->started)) {
     /* Check if this is the start of a VP8 frame, otherwise bail */
@@ -167,24 +166,28 @@ gst_rtp_vp8_depay_process (GstRTPBaseDepayload * depay, GstBuffer * buf)
   if (G_UNLIKELY (hdrsize >= size))
     goto too_small;
 
-  payload = gst_rtp_buffer_get_payload_subbuffer (&rtpbuffer, hdrsize, -1);
+  payload = gst_rtp_buffer_get_payload_subbuffer (rtp, hdrsize, -1);
   gst_adapter_push (self->adapter, payload);
 
   /* Marker indicates that it was the last rtp packet for this frame */
-  if (gst_rtp_buffer_get_marker (&rtpbuffer)) {
+  if (gst_rtp_buffer_get_marker (rtp)) {
     GstBuffer *out;
     guint8 header[10];
 
+    if (gst_adapter_available (self->adapter) < 10)
+      goto too_small;
     gst_adapter_copy (self->adapter, &header, 0, 10);
 
     out = gst_adapter_take_buffer (self->adapter,
         gst_adapter_available (self->adapter));
 
     self->started = FALSE;
-    gst_rtp_buffer_unmap (&rtpbuffer);
 
     /* mark keyframes */
     out = gst_buffer_make_writable (out);
+    /* Filter away all metas that are not sensible to copy */
+    gst_rtp_drop_meta (GST_ELEMENT_CAST (self), out,
+        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
     if ((header[0] & 0x01)) {
       GST_BUFFER_FLAG_SET (out, GST_BUFFER_FLAG_DELTA_UNIT);
 
@@ -231,7 +234,6 @@ gst_rtp_vp8_depay_process (GstRTPBaseDepayload * depay, GstBuffer * buf)
   }
 
 done:
-  gst_rtp_buffer_unmap (&rtpbuffer);
   return NULL;
 
 too_small:

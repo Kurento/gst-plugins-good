@@ -50,6 +50,7 @@ struct _GstRtpTheoraPay
 
   /* queues of buffers along with some stats. */
   GstBuffer    *packet;
+  GList        *packet_buffers;
   guint         payload_pos;
   guint         payload_left;
   guint32       payload_ident;
@@ -66,6 +67,7 @@ struct _GstRtpTheoraPay
   guint         config_interval;
   GstClockTime  last_config;
 
+  gint          pixel_format;
   gint          width;
   gint          height;
 };

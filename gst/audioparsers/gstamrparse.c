@@ -133,6 +133,7 @@ gst_amr_parse_init (GstAmrParse * amrparse)
   gst_base_parse_set_min_frame_size (GST_BASE_PARSE (amrparse), 62);
   GST_DEBUG ("initialized");
   GST_PAD_SET_ACCEPT_INTERSECT (GST_BASE_PARSE_SINK_PAD (amrparse));
+  GST_PAD_SET_ACCEPT_TEMPLATE (GST_BASE_PARSE_SINK_PAD (amrparse));
 }
 
 
@@ -433,8 +434,8 @@ gst_amr_parse_pre_push_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
         GST_TAG_AUDIO_CODEC, caps);
     gst_caps_unref (caps);
 
-    gst_pad_push_event (GST_BASE_PARSE_SRC_PAD (amrparse),
-        gst_event_new_tag (taglist));
+    gst_base_parse_merge_tags (parse, taglist, GST_TAG_MERGE_REPLACE);
+    gst_tag_list_unref (taglist);
 
     /* also signals the end of first-frame processing */
     amrparse->sent_codec_tag = TRUE;

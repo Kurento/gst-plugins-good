@@ -25,7 +25,9 @@
 #endif
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/audio/audio.h>
 #include "gstrtpsbcdepay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpsbcdepay_debug);
 #define GST_CAT_DEFAULT (rtpsbcdepay_debug)
@@ -59,7 +61,7 @@ static void gst_rtp_sbc_depay_finalize (GObject * object);
 static gboolean gst_rtp_sbc_depay_setcaps (GstRTPBaseDepayload * base,
     GstCaps * caps);
 static GstBuffer *gst_rtp_sbc_depay_process (GstRTPBaseDepayload * base,
-    GstBuffer * in);
+    GstRTPBuffer * rtp);
 
 static void
 gst_rtp_sbc_depay_class_init (GstRtpSbcDepayClass * klass)
@@ -72,7 +74,7 @@ gst_rtp_sbc_depay_class_init (GstRtpSbcDepayClass * klass)
   gobject_class->finalize = gst_rtp_sbc_depay_finalize;
 
   gstbasertpdepayload_class->set_caps = gst_rtp_sbc_depay_setcaps;
-  gstbasertpdepayload_class->process = gst_rtp_sbc_depay_process;
+  gstbasertpdepayload_class->process_rtp_packet = gst_rtp_sbc_depay_process;
 
   gst_element_class_add_pad_template (element_class,
       gst_static_pad_template_get (&gst_rtp_sbc_depay_src_template));
@@ -189,30 +191,27 @@ bad_caps:
 }
 
 static GstBuffer *
-gst_rtp_sbc_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
+gst_rtp_sbc_depay_process (GstRTPBaseDepayload * base, GstRTPBuffer * rtp)
 {
   GstRtpSbcDepay *depay = GST_RTP_SBC_DEPAY (base);
   GstBuffer *data = NULL;
-  GstRTPBuffer rtp = { NULL };
 
   gboolean fragment, start, last;
   guint8 nframes;
   guint8 *payload;
   guint payload_len;
 
-  gst_rtp_buffer_map (in, GST_MAP_READ, &rtp);
-
   GST_LOG_OBJECT (depay, "Got %" G_GSIZE_FORMAT " bytes",
-      gst_buffer_get_size (in));
+      gst_buffer_get_size (rtp->buffer));
 
-  if (gst_rtp_buffer_get_marker (&rtp)) {
+  if (gst_rtp_buffer_get_marker (rtp)) {
     /* Marker isn't supposed to be set */
     GST_WARNING_OBJECT (depay, "Marker bit was set");
     goto bad_packet;
   }
 
-  payload = gst_rtp_buffer_get_payload (&rtp);
-  payload_len = gst_rtp_buffer_get_payload_len (&rtp);
+  payload = gst_rtp_buffer_get_payload (rtp);
+  payload_len = gst_rtp_buffer_get_payload_len (rtp);
 
   fragment = payload[0] & 0x80;
   start = payload[0] & 0x40;
@@ -222,7 +221,7 @@ gst_rtp_sbc_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
   payload += 1;
   payload_len -= 1;
 
-  data = gst_rtp_buffer_get_payload_subbuffer (&rtp, 1, -1);
+  data = gst_rtp_buffer_get_payload_subbuffer (rtp, 1, -1);
 
   if (fragment) {
     /* Got a packet with a fragment */
@@ -244,6 +243,8 @@ gst_rtp_sbc_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
     if (last) {
       data = gst_adapter_take_buffer (depay->adapter,
           gst_adapter_available (depay->adapter));
+      gst_rtp_drop_meta (GST_ELEMENT_CAST (depay), data,
+          g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
     } else
       data = NULL;
 
@@ -270,7 +271,6 @@ gst_rtp_sbc_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
   }
 
 out:
-  gst_rtp_buffer_unmap (&rtp);
   return data;
 
 bad_packet:

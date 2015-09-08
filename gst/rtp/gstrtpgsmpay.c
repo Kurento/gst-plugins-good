@@ -25,8 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/audio/audio.h>
 
 #include "gstrtpgsmpay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpgsmpay_debug);
 #define GST_CAT_DEFAULT (rtpgsmpay_debug)
@@ -107,7 +109,8 @@ gst_rtp_gsm_pay_setcaps (GstRTPBasePayload * payload, GstCaps * caps)
   if (strcmp ("audio/x-gsm", stname))
     goto invalid_type;
 
-  gst_rtp_base_payload_set_options (payload, "audio", FALSE, "GSM", 8000);
+  gst_rtp_base_payload_set_options (payload, "audio",
+      payload->pt != GST_RTP_PAYLOAD_GSM, "GSM", 8000);
   res = gst_rtp_base_payload_set_outcaps (payload, NULL);
 
   return res;
@@ -147,6 +150,9 @@ gst_rtp_gsm_pay_handle_buffer (GstRTPBasePayload * basepayload,
   /* copy timestamp and duration */
   GST_BUFFER_PTS (outbuf) = timestamp;
   GST_BUFFER_DURATION (outbuf) = duration;
+
+  gst_rtp_copy_meta (GST_ELEMENT_CAST (rtpgsmpay), outbuf, buffer,
+      g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
 
   /* append payload */
   outbuf = gst_buffer_append (outbuf, buffer);

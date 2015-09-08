@@ -30,7 +30,9 @@
 #include <string.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 #include "gstrtph263depay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtph263depay_debug);
 #define GST_CAT_DEFAULT (rtph263depay_debug)
@@ -77,7 +79,7 @@ static GstStateChangeReturn gst_rtp_h263_depay_change_state (GstElement *
     element, GstStateChange transition);
 
 static GstBuffer *gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload,
-    GstBuffer * buf);
+    GstRTPBuffer * rtp);
 gboolean gst_rtp_h263_depay_setcaps (GstRTPBaseDepayload * filter,
     GstCaps * caps);
 
@@ -110,7 +112,7 @@ gst_rtp_h263_depay_class_init (GstRtpH263DepayClass * klass)
       "Philippe Kalaf <philippe.kalaf@collabora.co.uk>, "
       "Edward Hervey <bilboed@bilboed.com>");
 
-  gstrtpbasedepayload_class->process = gst_rtp_h263_depay_process;
+  gstrtpbasedepayload_class->process_rtp_packet = gst_rtp_h263_depay_process;
   gstrtpbasedepayload_class->set_caps = gst_rtp_h263_depay_setcaps;
 }
 
@@ -204,7 +206,7 @@ gst_rtp_h263_depay_setcaps (GstRTPBaseDepayload * filter, GstCaps * caps)
 }
 
 static GstBuffer *
-gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
+gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
 {
   GstRtpH263Depay *rtph263depay;
   GstBuffer *outbuf;
@@ -214,12 +216,11 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
   guint SBIT, EBIT;
   gboolean F, P, M;
   gboolean I;
-  GstRTPBuffer rtp = { NULL };
 
   rtph263depay = GST_RTP_H263_DEPAY (depayload);
 
   /* flush remaining data on discont */
-  if (GST_BUFFER_IS_DISCONT (buf)) {
+  if (GST_BUFFER_IS_DISCONT (rtp->buffer)) {
     GST_LOG_OBJECT (depayload, "Discont buffer, flushing adapter");
     gst_adapter_clear (rtph263depay->adapter);
     rtph263depay->offset = 0;
@@ -227,12 +228,13 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
     rtph263depay->start = FALSE;
   }
 
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
+  payload_len = gst_rtp_buffer_get_payload_len (rtp);
+  payload = gst_rtp_buffer_get_payload (rtp);
 
-  payload_len = gst_rtp_buffer_get_payload_len (&rtp);
-  payload = gst_rtp_buffer_get_payload (&rtp);
+  M = gst_rtp_buffer_get_marker (rtp);
 
-  M = gst_rtp_buffer_get_marker (&rtp);
+  if (payload_len < 1)
+    goto too_small;
 
   /* Let's see what mode we are using */
   F = (payload[0] & 0x80) == 0x80;
@@ -255,6 +257,8 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
      * |F|P|SBIT |EBIT | SRC |I|U|S|A|R      |DBQ| TRB |    TR         |
      * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
      */
+    if (payload_len <= header_len)
+      goto too_small;
     I = (payload[1] & 0x10) == 0x10;
   } else {
     if (P == 0) {
@@ -271,6 +275,8 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
        * |I|U|S|A| HMV1        | VMV1        | HMV2        | VMV2        |
        * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
        */
+      if (payload_len <= header_len)
+        goto too_small;
       I = (payload[4] & 0x80) == 0x80;
     } else {
       /* F == 1 and P == 1
@@ -288,6 +294,8 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
        * | RR                                  |DBQ| TRB |    TR         |
        * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
        */
+      if (payload_len <= header_len)
+        goto too_small;
       I = (payload[4] & 0x80) == 0x80;
     }
   }
@@ -337,13 +345,13 @@ gst_rtp_h263_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
     GstBuffer *tmp;
 
     /* Take the entire buffer */
-    tmp = gst_rtp_buffer_get_payload_subbuffer (&rtp, header_len, payload_len);
+    tmp = gst_rtp_buffer_get_payload_subbuffer (rtp, header_len, payload_len);
     gst_adapter_push (rtph263depay->adapter, tmp);
   } else {
     GstBuffer *tmp;
 
     /* Take the entire buffer except for the last byte */
-    tmp = gst_rtp_buffer_get_payload_subbuffer (&rtp, header_len,
+    tmp = gst_rtp_buffer_get_payload_subbuffer (rtp, header_len,
         payload_len - 1);
     gst_adapter_push (rtph263depay->adapter, tmp);
 
@@ -378,6 +386,9 @@ skip:
 
       GST_DEBUG ("Pushing out a buffer of %d bytes", avail);
 
+      gst_rtp_drop_meta (GST_ELEMENT_CAST (rtph263depay), outbuf,
+          g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
+
       gst_rtp_base_depayload_push (depayload, outbuf);
       rtph263depay->offset = 0;
       rtph263depay->leftover = 0;
@@ -386,9 +397,15 @@ skip:
       rtph263depay->start = TRUE;
     }
   }
-  gst_rtp_buffer_unmap (&rtp);
 
   return NULL;
+
+too_small:
+  {
+    GST_ELEMENT_WARNING (rtph263depay, STREAM, DECODE,
+        ("Packet payload was too small"), (NULL));
+    return NULL;
+  }
 }
 
 static GstStateChangeReturn

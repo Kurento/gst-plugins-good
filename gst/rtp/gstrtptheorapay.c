@@ -24,9 +24,11 @@
 #include <string.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 
 #include "fnv1hash.h"
 #include "gstrtptheorapay.h"
+#include "gstrtputils.h"
 
 #define THEORA_ID_LEN	42
 
@@ -151,6 +153,11 @@ gst_rtp_theora_pay_clear_packet (GstRtpTheoraPay * rtptheorapay)
   if (rtptheorapay->packet)
     gst_buffer_unref (rtptheorapay->packet);
   rtptheorapay->packet = NULL;
+
+  g_list_foreach (rtptheorapay->packet_buffers, (GFunc) gst_mini_object_unref,
+      NULL);
+  g_list_free (rtptheorapay->packet_buffers);
+  rtptheorapay->packet_buffers = NULL;
 }
 
 static void
@@ -279,6 +286,11 @@ gst_rtp_theora_pay_init_packet (GstRtpTheoraPay * rtptheorapay, guint8 TDT,
   if (rtptheorapay->packet)
     gst_buffer_unref (rtptheorapay->packet);
 
+  g_list_foreach (rtptheorapay->packet_buffers, (GFunc) gst_mini_object_unref,
+      NULL);
+  g_list_free (rtptheorapay->packet_buffers);
+  rtptheorapay->packet_buffers = NULL;
+
   /* new packet allocate max packet size */
   rtptheorapay->packet =
       gst_rtp_buffer_new_allocate_len (GST_RTP_BASE_PAYLOAD_MTU
@@ -295,6 +307,7 @@ gst_rtp_theora_pay_flush_packet (GstRtpTheoraPay * rtptheorapay)
   guint8 *payload;
   guint hlen;
   GstRTPBuffer rtp = { NULL };
+  GList *l;
 
   /* check for empty packet */
   if (!rtptheorapay->packet || rtptheorapay->payload_pos <= 4)
@@ -332,6 +345,15 @@ gst_rtp_theora_pay_flush_packet (GstRtpTheoraPay * rtptheorapay)
 
   GST_BUFFER_DURATION (rtptheorapay->packet) = rtptheorapay->payload_duration;
 
+  for (l = g_list_last (rtptheorapay->packet_buffers); l; l = l->prev) {
+    GstBuffer *buf = GST_BUFFER_CAST (l->data);
+    gst_rtp_copy_meta (GST_ELEMENT_CAST (rtptheorapay), rtptheorapay->packet,
+        buf, g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
+    gst_buffer_unref (buf);
+  }
+  g_list_free (rtptheorapay->packet_buffers);
+  rtptheorapay->packet_buffers = NULL;
+
   /* push, this gives away our ref to the packet, so clear it. */
   ret =
       gst_rtp_base_payload_push (GST_RTP_BASE_PAYLOAD (rtptheorapay),
@@ -351,6 +373,7 @@ gst_rtp_theora_pay_finish_headers (GstRTPBasePayload * basepayload)
   guint8 *data, *config;
   guint32 ident;
   gboolean res;
+  const gchar *sampling = NULL;
 
   GST_DEBUG_OBJECT (rtptheorapay, "finish headers");
 
@@ -497,10 +520,7 @@ gst_rtp_theora_pay_finish_headers (GstRTPBasePayload * basepayload)
 
     gst_buffer_extract (buf, 0, data, gst_buffer_get_size (buf));
     data += gst_buffer_get_size (buf);
-    gst_buffer_unref (buf);
   }
-  g_list_free (rtptheorapay->headers);
-  rtptheorapay->headers = NULL;
   rtptheorapay->need_headers = FALSE;
 
   /* serialize to base64 */
@@ -518,13 +538,27 @@ gst_rtp_theora_pay_finish_headers (GstRTPBasePayload * basepayload)
   g_free (config);
 
   /* configure payloader settings */
+  switch (rtptheorapay->pixel_format) {
+    case 2:
+      sampling = "YCbCr-4:2:2";
+      break;
+    case 3:
+      sampling = "YCbCr-4:4:4";
+      break;
+    case 0:
+    default:
+      sampling = "YCbCr-4:2:0";
+      break;
+  }
+
+
   wstr = g_strdup_printf ("%d", rtptheorapay->width);
   hstr = g_strdup_printf ("%d", rtptheorapay->height);
   gst_rtp_base_payload_set_options (basepayload, "video", TRUE, "THEORA",
       90000);
   res =
       gst_rtp_base_payload_set_outcaps (basepayload, "sampling", G_TYPE_STRING,
-      "YCbCr-4:2:0", "width", G_TYPE_STRING, wstr, "height", G_TYPE_STRING,
+      sampling, "width", G_TYPE_STRING, wstr, "height", G_TYPE_STRING,
       hstr, "configuration", G_TYPE_STRING, configuration, "delivery-method",
       G_TYPE_STRING, "inline",
       /* don't set the other defaults 
@@ -549,7 +583,7 @@ gst_rtp_theora_pay_parse_id (GstRTPBasePayload * basepayload, guint8 * data,
     guint size)
 {
   GstRtpTheoraPay *rtptheorapay;
-  gint width, height;
+  gint width, height, pixel_format;
 
   rtptheorapay = GST_RTP_THEORA_PAY (basepayload);
 
@@ -569,11 +603,12 @@ gst_rtp_theora_pay_parse_id (GstRTPBasePayload * basepayload, guint8 * data,
   width = GST_READ_UINT16_BE (data) << 4;
   data += 2;
   height = GST_READ_UINT16_BE (data) << 4;
-  data += 2;
+  data += 29;
 
-  /* FIXME, parse pixel format */
+  pixel_format = (GST_READ_UINT8 (data) >> 3) & 0x03;
 
   /* store values */
+  rtptheorapay->pixel_format = pixel_format;
   rtptheorapay->width = width;
   rtptheorapay->height = height;
 
@@ -603,8 +638,8 @@ invalid_version:
 
 static GstFlowReturn
 gst_rtp_theora_pay_payload_buffer (GstRtpTheoraPay * rtptheorapay, guint8 TDT,
-    guint8 * data, guint size, GstClockTime timestamp, GstClockTime duration,
-    guint not_in_length)
+    GstBuffer * buffer, guint8 * data, guint size, GstClockTime timestamp,
+    GstClockTime duration, guint not_in_length)
 {
   GstFlowReturn ret = GST_FLOW_OK;
   guint newsize;
@@ -635,6 +670,9 @@ gst_rtp_theora_pay_payload_buffer (GstRtpTheoraPay * rtptheorapay, guint8 TDT,
   if (flush)
     ret = gst_rtp_theora_pay_flush_packet (rtptheorapay);
 
+  if (ret != GST_FLOW_OK)
+    goto done;
+
   /* create new packet if we must */
   if (!rtptheorapay->packet) {
     gst_rtp_theora_pay_init_packet (rtptheorapay, TDT, timestamp);
@@ -657,6 +695,21 @@ gst_rtp_theora_pay_payload_buffer (GstRtpTheoraPay * rtptheorapay, guint8 TDT,
     ppos[1] = ((plen - not_in_length) & 0xff);
     if (plen)
       memcpy (&ppos[2], data, plen);
+
+    if (buffer) {
+      if (!rtptheorapay->packet_buffers
+          || rtptheorapay->packet_buffers->data != (gpointer) buffer)
+        rtptheorapay->packet_buffers =
+            g_list_prepend (rtptheorapay->packet_buffers,
+            gst_buffer_ref (buffer));
+    } else {
+      GList *l;
+
+      for (l = rtptheorapay->headers; l; l = l->next)
+        rtptheorapay->packet_buffers =
+            g_list_prepend (rtptheorapay->packet_buffers,
+            gst_buffer_ref (buffer));
+    }
 
     /* only first (only) configuration cuts length field */
     /* NOTE: spec (if any) is not clear on this ... */
@@ -704,10 +757,11 @@ gst_rtp_theora_pay_payload_buffer (GstRtpTheoraPay * rtptheorapay, guint8 TDT,
       if (duration != GST_CLOCK_TIME_NONE)
         rtptheorapay->payload_duration += duration;
     }
-  } while (size);
+  } while (size && ret == GST_FLOW_OK);
 
   if (rtp.buffer)
     gst_rtp_buffer_unmap (&rtp);
+done:
 
   return ret;
 }
@@ -770,15 +824,9 @@ gst_rtp_theora_pay_handle_buffer (GstRTPBasePayload * basepayload,
     rtptheorapay->headers = g_list_append (rtptheorapay->headers, buffer);
     ret = GST_FLOW_OK;
     goto done;
-  } else if (rtptheorapay->headers) {
-    if (rtptheorapay->need_headers) {
-      if (!gst_rtp_theora_pay_finish_headers (basepayload))
-        goto header_error;
-    } else {
-      g_list_free_full (rtptheorapay->headers,
-          (GDestroyNotify) gst_buffer_unref);
-      rtptheorapay->headers = NULL;
-    }
+  } else if (rtptheorapay->headers && rtptheorapay->need_headers) {
+    if (!gst_rtp_theora_pay_finish_headers (basepayload))
+      goto header_error;
   }
 
   /* there is a config request, see if we need to insert it */
@@ -819,7 +867,7 @@ gst_rtp_theora_pay_handle_buffer (GstRTPBasePayload * basepayload,
       /* we need to send config now first */
       /* different TDT type forces flush */
       gst_rtp_theora_pay_payload_buffer (rtptheorapay, 1,
-          rtptheorapay->config_data, rtptheorapay->config_size,
+          NULL, rtptheorapay->config_data, rtptheorapay->config_size,
           timestamp, GST_CLOCK_TIME_NONE, rtptheorapay->config_extra_len);
 
       if (timestamp != -1) {
@@ -828,7 +876,8 @@ gst_rtp_theora_pay_handle_buffer (GstRTPBasePayload * basepayload,
     }
   }
 
-  ret = gst_rtp_theora_pay_payload_buffer (rtptheorapay, TDT, data, size,
+  ret =
+      gst_rtp_theora_pay_payload_buffer (rtptheorapay, TDT, buffer, data, size,
       timestamp, duration, 0);
 
   gst_buffer_unmap (buffer, &map);

@@ -24,8 +24,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 
 #include "gstrtpmpvpay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpmpvpay_debug);
 #define GST_CAT_DEFAULT (rtpmpvpay_debug)
@@ -39,12 +41,16 @@ GST_STATIC_PAD_TEMPLATE ("sink",
     );
 
 static GstStaticPadTemplate gst_rtp_mpv_pay_src_template =
-GST_STATIC_PAD_TEMPLATE ("src",
+    GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("application/x-rtp, "
         "media = (string) \"video\", "
         "payload = (int) " GST_RTP_PAYLOAD_MPV_STRING ", "
+        "clock-rate = (int) 90000, " "encoding-name = (string) \"MPV\"; "
+        "application/x-rtp, "
+        "media = (string) \"video\", "
+        "payload = (int) " GST_RTP_PAYLOAD_DYNAMIC_STRING ", "
         "clock-rate = (int) 90000, " "encoding-name = (string) \"MPV\"")
     );
 
@@ -131,7 +137,8 @@ gst_rtp_mpv_pay_reset (GstRTPMPVPay * pay)
 static gboolean
 gst_rtp_mpv_pay_setcaps (GstRTPBasePayload * payload, GstCaps * caps)
 {
-  gst_rtp_base_payload_set_options (payload, "video", FALSE, "MPV", 90000);
+  gst_rtp_base_payload_set_options (payload, "video",
+      payload->pt != GST_RTP_PAYLOAD_MPV, "MPV", 90000);
   return gst_rtp_base_payload_set_outcaps (payload, NULL);
 }
 
@@ -221,6 +228,8 @@ gst_rtp_mpv_pay_flush (GstRTPMPVPay * rtpmpvpay)
     gst_rtp_buffer_unmap (&rtp);
 
     paybuf = gst_adapter_take_buffer_fast (rtpmpvpay->adapter, payload_len);
+    gst_rtp_copy_meta (GST_ELEMENT_CAST (rtpmpvpay), outbuf, paybuf,
+        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
     outbuf = gst_buffer_append (outbuf, paybuf);
 
     GST_BUFFER_PTS (outbuf) = rtpmpvpay->first_ts;

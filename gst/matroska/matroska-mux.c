@@ -301,7 +301,7 @@ gst_matroska_mux_class_init (GstMatroskaMuxClass * klass)
   gst_element_class_set_static_metadata (gstelement_class, "Matroska muxer",
       "Codec/Muxer",
       "Muxes video/audio/subtitle streams into a matroska stream",
-      "GStreamer maintainers <gstreamer-devel@lists.sourceforge.net>");
+      "GStreamer maintainers <gstreamer-devel@lists.freedesktop.org>");
 
   GST_DEBUG_CATEGORY_INIT (matroskamux_debug, "matroskamux", 0,
       "Matroska muxer");
@@ -341,7 +341,7 @@ gst_matroska_mux_class_init (GstMatroskaMuxClass * klass)
   parent_class = g_type_class_peek_parent (klass);
 }
 
-/**
+/*
  * Start of pad option handler code
  */
 #define DEFAULT_PAD_FRAME_DURATION TRUE
@@ -2675,7 +2675,7 @@ gst_matroska_mux_start (GstMatroskaMux * mux)
       gst_query_parse_seeking (query, NULL, &seekable, NULL, NULL);
       GST_INFO_OBJECT (mux, "downstream is %sseekable", seekable ? "" : "not ");
     } else {
-      /* have to assume seeking is supported if query not handled downstream */
+      /* assume seeking is not supported if query not handled downstream */
       GST_WARNING_OBJECT (mux, "downstream did not handle seeking query");
       seekable = FALSE;
     }

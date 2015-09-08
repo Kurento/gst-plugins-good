@@ -38,8 +38,10 @@
 
 #include <string.h>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 
 #include "gstrtpjpegpay.h"
+#include "gstrtputils.h"
 
 static GstStaticPadTemplate gst_rtp_jpeg_pay_sink_template =
     GST_STATIC_PAD_TEMPLATE ("sink",
@@ -49,12 +51,18 @@ static GstStaticPadTemplate gst_rtp_jpeg_pay_sink_template =
     );
 
 static GstStaticPadTemplate gst_rtp_jpeg_pay_src_template =
-GST_STATIC_PAD_TEMPLATE ("src",
+    GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("application/x-rtp, "
         "  media = (string) \"video\", "
-        "  payload = (int) 26 ,        "
+        "  payload = (int) " GST_RTP_PAYLOAD_JPEG_STRING ", "
+        "  clock-rate = (int) 90000,   "
+        "  encoding-name = (string) \"JPEG\", "
+        "  width = (int) [ 1, 65536 ], " "  height = (int) [ 1, 65536 ]; "
+        " application/x-rtp, "
+        "  media = (string) \"video\", "
+        "  payload = (int) " GST_RTP_PAYLOAD_DYNAMIC_STRING ", "
         "  clock-rate = (int) 90000,   "
         "  encoding-name = (string) \"JPEG\", "
         "  width = (int) [ 1, 65536 ], " "  height = (int) [ 1, 65536 ]")
@@ -283,6 +291,8 @@ gst_rtp_jpeg_pay_init (GstRtpJPEGPay * pay)
   pay->type = DEFAULT_JPEG_TYPE;
   pay->width = -1;
   pay->height = -1;
+
+  GST_RTP_BASE_PAYLOAD_PT (pay) = GST_RTP_PAYLOAD_JPEG;
 }
 
 static gboolean
@@ -321,7 +331,8 @@ gst_rtp_jpeg_pay_setcaps (GstRTPBasePayload * basepayload, GstCaps * caps)
     pay->width = GST_ROUND_UP_8 (width) / 8;
   }
 
-  gst_rtp_base_payload_set_options (basepayload, "video", TRUE, "JPEG", 90000);
+  gst_rtp_base_payload_set_options (basepayload, "video",
+      basepayload->pt != GST_RTP_PAYLOAD_JPEG, "JPEG", 90000);
 
   if (num > 0) {
     gdouble framerate;
@@ -882,10 +893,12 @@ gst_rtp_jpeg_pay_handle_buffer (GstRTPBasePayload * basepayload,
     gst_rtp_buffer_unmap (&rtp);
 
     /* create a new buf to hold the payload */
-    paybuf = gst_buffer_copy_region (buffer, GST_BUFFER_COPY_MEMORY,
+    paybuf = gst_buffer_copy_region (buffer, GST_BUFFER_COPY_ALL,
         jpeg_header_size + offset, payload_size);
 
     /* join memory parts */
+    gst_rtp_copy_meta (GST_ELEMENT_CAST (pay), outbuf, paybuf,
+        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
     outbuf = gst_buffer_append (outbuf, paybuf);
 
     GST_BUFFER_PTS (outbuf) = timestamp;

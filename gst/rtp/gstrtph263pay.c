@@ -27,8 +27,10 @@
 #include <string.h>
 #include <math.h>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 
 #include "gstrtph263pay.h"
+#include "gstrtputils.h"
 
 typedef enum
 {
@@ -440,6 +442,7 @@ gst_rtp_h263_pay_class_init (GstRtpH263PayClass * klass)
 static void
 gst_rtp_h263_pay_init (GstRtpH263Pay * rtph263pay)
 {
+  GST_RTP_BASE_PAYLOAD_PT (rtph263pay) = GST_RTP_PAYLOAD_H263;
   rtph263pay->prop_payload_mode = DEFAULT_MODE_A;
 }
 
@@ -476,8 +479,8 @@ gst_rtp_h263_pay_setcaps (GstRTPBasePayload * payload, GstCaps * caps)
     framesize = g_strdup_printf ("%d-%d", width, height);
   }
 
-  payload->pt = GST_RTP_PAYLOAD_H263;
-  gst_rtp_base_payload_set_options (payload, "video", TRUE, "H263", 90000);
+  gst_rtp_base_payload_set_options (payload, "video",
+      payload->pt != GST_RTP_PAYLOAD_H263, "H263", 90000);
 
   if (framesize != NULL) {
     res = gst_rtp_base_payload_set_outcaps (payload,
@@ -1306,6 +1309,9 @@ gst_rtp_h263_pay_push (GstRtpH263Pay * rtph263pay,
   gst_buffer_copy_into (package->outbuf, rtph263pay->current_buffer,
       GST_BUFFER_COPY_MEMORY, package->payload_start - rtph263pay->map.data,
       package->payload_len);
+  gst_rtp_copy_meta (GST_ELEMENT_CAST (rtph263pay), package->outbuf,
+      rtph263pay->current_buffer,
+      g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
 
   ret =
       gst_rtp_base_payload_push (GST_RTP_BASE_PAYLOAD (rtph263pay),

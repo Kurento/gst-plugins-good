@@ -49,7 +49,9 @@
 #endif
 
 #include "gstrtph261pay.h"
+#include "gstrtputils.h"
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 #include <gst/base/gstbitreader.h>
 #include <string.h>
 
@@ -146,21 +148,21 @@ typedef enum
 #define MBA_WID 4
 /* [code, mask, nbits, mba] */
 static const guint16 mba_table[MBA_LEN][MBA_WID] = {
-  {0x8000, 0x8000,  1, 1},
-  {0x6000, 0xe000,  3, 2},
-  {0x4000, 0xe000,  3, 3},
-  {0x3000, 0xf000,  4, 4},
-  {0x2000, 0xf000,  4, 5},
-  {0x1800, 0xf800,  5, 6},
-  {0x1000, 0xf800,  5, 7},
-  {0x0e00, 0xfe00,  7, 8},
-  {0x0c00, 0xfe00,  7, 9},
-  {0x0b00, 0xff00,  8, 10},
-  {0x0a00, 0xff00,  8, 11},
-  {0x0900, 0xff00,  8, 12},
-  {0x0800, 0xff00,  8, 13},
-  {0x0700, 0xff00,  8, 14},
-  {0x0600, 0xff00,  8, 15},
+  {0x8000, 0x8000, 1, 1},
+  {0x6000, 0xe000, 3, 2},
+  {0x4000, 0xe000, 3, 3},
+  {0x3000, 0xf000, 4, 4},
+  {0x2000, 0xf000, 4, 5},
+  {0x1800, 0xf800, 5, 6},
+  {0x1000, 0xf800, 5, 7},
+  {0x0e00, 0xfe00, 7, 8},
+  {0x0c00, 0xfe00, 7, 9},
+  {0x0b00, 0xff00, 8, 10},
+  {0x0a00, 0xff00, 8, 11},
+  {0x0900, 0xff00, 8, 12},
+  {0x0800, 0xff00, 8, 13},
+  {0x0700, 0xff00, 8, 14},
+  {0x0600, 0xff00, 8, 15},
   {0x05c0, 0xffc0, 10, 16},
   {0x0580, 0xffc0, 10, 17},
   {0x0540, 0xffc0, 10, 18},
@@ -195,122 +197,129 @@ static const guint16 mba_table[MBA_LEN][MBA_WID] = {
 #define MTYPE_WID 4
 /* [code, mask, nbits, flags] */
 static const guint16 mtype_table[MTYPE_LEN][MTYPE_WID] = {
-  {0x8000, 0x8000,  1, MTYPE_INTER                                                   | MTYPE_CBP | MTYPE_TCOEFF },
-  {0x4000, 0xc000,  2, MTYPE_INTER | MTYPE_MC | MTYPE_FIL                | MTYPE_MVD | MTYPE_CBP | MTYPE_TCOEFF },
-  {0x2000, 0xe000,  3, MTYPE_INTER | MTYPE_MC | MTYPE_FIL                | MTYPE_MVD                            },
-  {0x1000, 0xf000,  4, MTYPE_INTRA                                                               | MTYPE_TCOEFF },
-  {0x0800, 0xf800,  5, MTYPE_INTER                        | MTYPE_MQUANT             | MTYPE_CBP | MTYPE_TCOEFF },
-  {0x0400, 0xfc00,  6, MTYPE_INTER | MTYPE_MC | MTYPE_FIL | MTYPE_MQUANT | MTYPE_MVD | MTYPE_CBP | MTYPE_TCOEFF },
-  {0x0200, 0xfe00,  7, MTYPE_INTRA                        | MTYPE_MQUANT                         | MTYPE_TCOEFF },
-  {0x0100, 0xff00,  8, MTYPE_INTER | MTYPE_MC                            | MTYPE_MVD | MTYPE_CBP | MTYPE_TCOEFF },
-  {0x0080, 0xff80,  9, MTYPE_INTER | MTYPE_MC                            | MTYPE_MVD                            },
-  {0x0040, 0xffc0, 10, MTYPE_INTER | MTYPE_MC             | MTYPE_MQUANT | MTYPE_MVD | MTYPE_CBP | MTYPE_TCOEFF },
+  {0x8000, 0x8000, 1, MTYPE_INTER | MTYPE_CBP | MTYPE_TCOEFF},
+  {0x4000, 0xc000, 2,
+      MTYPE_INTER | MTYPE_MC | MTYPE_FIL | MTYPE_MVD | MTYPE_CBP |
+        MTYPE_TCOEFF},
+  {0x2000, 0xe000, 3, MTYPE_INTER | MTYPE_MC | MTYPE_FIL | MTYPE_MVD},
+  {0x1000, 0xf000, 4, MTYPE_INTRA | MTYPE_TCOEFF},
+  {0x0800, 0xf800, 5, MTYPE_INTER | MTYPE_MQUANT | MTYPE_CBP | MTYPE_TCOEFF},
+  {0x0400, 0xfc00, 6,
+      MTYPE_INTER | MTYPE_MC | MTYPE_FIL | MTYPE_MQUANT | MTYPE_MVD |
+        MTYPE_CBP | MTYPE_TCOEFF},
+  {0x0200, 0xfe00, 7, MTYPE_INTRA | MTYPE_MQUANT | MTYPE_TCOEFF},
+  {0x0100, 0xff00, 8,
+      MTYPE_INTER | MTYPE_MC | MTYPE_MVD | MTYPE_CBP | MTYPE_TCOEFF},
+  {0x0080, 0xff80, 9, MTYPE_INTER | MTYPE_MC | MTYPE_MVD},
+  {0x0040, 0xffc0, 10,
+      MTYPE_INTER | MTYPE_MC | MTYPE_MQUANT | MTYPE_MVD | MTYPE_CBP |
+        MTYPE_TCOEFF},
 };
 
 #define MVD_LEN 32
 #define MVD_WID 5
 /* [code, mask, nbits, mvd1, mvd2] */
 static const guint16 mvd_table[MVD_LEN][MVD_WID] = {
-  {0x8000, 0x8000,  1,   0,   0},
-  {0x6000, 0xe000,  3,  -1,  -1},
-  {0x4000, 0xe000,  3,   1,   1},
-  {0x3000, 0xf000,  4,  -2,  30},
-  {0x2000, 0xf000,  4,   2, -30},
-  {0x1800, 0xf800,  5,  -3,  29},
-  {0x1000, 0xf800,  5,   3, -29},
-  {0x0e00, 0xfe00,  7,  -4,  28},
-  {0x0c00, 0xfe00,  7,   4, -28},
-  {0x0700, 0xff00,  8,  -7,  25},
-  {0x0900, 0xff00,  8,  -6,  26},
-  {0x0b00, 0xff00,  8,  -5,  27},
-  {0x0a00, 0xff00,  8,   5, -27},
-  {0x0800, 0xff00,  8,   6, -26},
-  {0x0600, 0xff00,  8,   7, -25},
-  {0x04c0, 0xffc0, 10, -10,  22},
-  {0x0540, 0xffc0, 10,  -9,  23},
-  {0x05c0, 0xffc0, 10,  -8,  24},
-  {0x0580, 0xffc0, 10,   8, -24},
-  {0x0500, 0xffc0, 10,   9, -23},
-  {0x0480, 0xffc0, 10,  10, -22},
-  {0x0320, 0xffe0, 11, -16,  16},
-  {0x0360, 0xffe0, 11, -15,  17},
-  {0x03a0, 0xffe0, 11, -14,  18},
-  {0x03e0, 0xffe0, 11, -13,  19},
-  {0x0420, 0xffe0, 11, -12,  20},
-  {0x0460, 0xffe0, 11, -11,  21},
-  {0x0440, 0xffe0, 11,  11, -21},
-  {0x0400, 0xffe0, 11,  12, -20},
-  {0x03c0, 0xffe0, 11,  13, -19},
-  {0x0380, 0xffe0, 11,  14, -18},
-  {0x0340, 0xffe0, 11,  15, -17},
+  {0x8000, 0x8000, 1, 0, 0},
+  {0x6000, 0xe000, 3, -1, -1},
+  {0x4000, 0xe000, 3, 1, 1},
+  {0x3000, 0xf000, 4, -2, 30},
+  {0x2000, 0xf000, 4, 2, -30},
+  {0x1800, 0xf800, 5, -3, 29},
+  {0x1000, 0xf800, 5, 3, -29},
+  {0x0e00, 0xfe00, 7, -4, 28},
+  {0x0c00, 0xfe00, 7, 4, -28},
+  {0x0700, 0xff00, 8, -7, 25},
+  {0x0900, 0xff00, 8, -6, 26},
+  {0x0b00, 0xff00, 8, -5, 27},
+  {0x0a00, 0xff00, 8, 5, -27},
+  {0x0800, 0xff00, 8, 6, -26},
+  {0x0600, 0xff00, 8, 7, -25},
+  {0x04c0, 0xffc0, 10, -10, 22},
+  {0x0540, 0xffc0, 10, -9, 23},
+  {0x05c0, 0xffc0, 10, -8, 24},
+  {0x0580, 0xffc0, 10, 8, -24},
+  {0x0500, 0xffc0, 10, 9, -23},
+  {0x0480, 0xffc0, 10, 10, -22},
+  {0x0320, 0xffe0, 11, -16, 16},
+  {0x0360, 0xffe0, 11, -15, 17},
+  {0x03a0, 0xffe0, 11, -14, 18},
+  {0x03e0, 0xffe0, 11, -13, 19},
+  {0x0420, 0xffe0, 11, -12, 20},
+  {0x0460, 0xffe0, 11, -11, 21},
+  {0x0440, 0xffe0, 11, 11, -21},
+  {0x0400, 0xffe0, 11, 12, -20},
+  {0x03c0, 0xffe0, 11, 13, -19},
+  {0x0380, 0xffe0, 11, 14, -18},
+  {0x0340, 0xffe0, 11, 15, -17},
 };
 
 #define CBP_LEN 63
 /* [code, mask, nbits, cbp] */
 static const guint16 cbp_table[CBP_LEN][4] = {
-  {0xe000, 0xe000,  3, 60},
-  {0xd000, 0xf000,  4, 4},
-  {0xc000, 0xf000,  4, 8},
-  {0xb000, 0xf000,  4, 16},
-  {0xa000, 0xf000,  4, 32},
-  {0x9800, 0xf800,  5, 12},
-  {0x9000, 0xf800,  5, 48},
-  {0x8800, 0xf800,  5, 20},
-  {0x8000, 0xf800,  5, 40},
-  {0x7800, 0xf800,  5, 28},
-  {0x7000, 0xf800,  5, 44},
-  {0x6800, 0xf800,  5, 52},
-  {0x6000, 0xf800,  5, 56},
-  {0x5800, 0xf800,  5, 1},
-  {0x5000, 0xf800,  5, 61},
-  {0x4800, 0xf800,  5, 2},
-  {0x4000, 0xf800,  5, 62},
-  {0x3c00, 0xfc00,  6, 24},
-  {0x3800, 0xfc00,  6, 36},
-  {0x3400, 0xfc00,  6, 3},
-  {0x3000, 0xfc00,  6, 63},
-  {0x2e00, 0xfe00,  7, 5},
-  {0x2c00, 0xfe00,  7, 9},
-  {0x2a00, 0xfe00,  7, 17},
-  {0x2800, 0xfe00,  7, 33},
-  {0x2600, 0xfe00,  7, 6},
-  {0x2400, 0xfe00,  7, 10},
-  {0x2200, 0xfe00,  7, 18},
-  {0x2000, 0xfe00,  7, 34},
-  {0x1f00, 0xff00,  8, 7},
-  {0x1e00, 0xff00,  8, 11},
-  {0x1d00, 0xff00,  8, 19},
-  {0x1c00, 0xff00,  8, 35},
-  {0x1b00, 0xff00,  8, 13},
-  {0x1a00, 0xff00,  8, 49},
-  {0x1900, 0xff00,  8, 21},
-  {0x1800, 0xff00,  8, 41},
-  {0x1700, 0xff00,  8, 14},
-  {0x1600, 0xff00,  8, 50},
-  {0x1500, 0xff00,  8, 22},
-  {0x1400, 0xff00,  8, 42},
-  {0x1300, 0xff00,  8, 15},
-  {0x1200, 0xff00,  8, 51},
-  {0x1100, 0xff00,  8, 23},
-  {0x1000, 0xff00,  8, 43},
-  {0x0f00, 0xff00,  8, 25},
-  {0x0e00, 0xff00,  8, 37},
-  {0x0d00, 0xff00,  8, 26},
-  {0x0c00, 0xff00,  8, 38},
-  {0x0b00, 0xff00,  8, 29},
-  {0x0a00, 0xff00,  8, 45},
-  {0x0900, 0xff00,  8, 53},
-  {0x0800, 0xff00,  8, 57},
-  {0x0700, 0xff00,  8, 30},
-  {0x0600, 0xff00,  8, 46},
-  {0x0500, 0xff00,  8, 54},
-  {0x0400, 0xff00,  8, 58},
-  {0x0380, 0xff80,  9, 31},
-  {0x0300, 0xff80,  9, 47},
-  {0x0280, 0xff80,  9, 55},
-  {0x0200, 0xff80,  9, 59},
-  {0x0180, 0xff80,  9, 27},
-  {0x0100, 0xff80,  9, 39},
+  {0xe000, 0xe000, 3, 60},
+  {0xd000, 0xf000, 4, 4},
+  {0xc000, 0xf000, 4, 8},
+  {0xb000, 0xf000, 4, 16},
+  {0xa000, 0xf000, 4, 32},
+  {0x9800, 0xf800, 5, 12},
+  {0x9000, 0xf800, 5, 48},
+  {0x8800, 0xf800, 5, 20},
+  {0x8000, 0xf800, 5, 40},
+  {0x7800, 0xf800, 5, 28},
+  {0x7000, 0xf800, 5, 44},
+  {0x6800, 0xf800, 5, 52},
+  {0x6000, 0xf800, 5, 56},
+  {0x5800, 0xf800, 5, 1},
+  {0x5000, 0xf800, 5, 61},
+  {0x4800, 0xf800, 5, 2},
+  {0x4000, 0xf800, 5, 62},
+  {0x3c00, 0xfc00, 6, 24},
+  {0x3800, 0xfc00, 6, 36},
+  {0x3400, 0xfc00, 6, 3},
+  {0x3000, 0xfc00, 6, 63},
+  {0x2e00, 0xfe00, 7, 5},
+  {0x2c00, 0xfe00, 7, 9},
+  {0x2a00, 0xfe00, 7, 17},
+  {0x2800, 0xfe00, 7, 33},
+  {0x2600, 0xfe00, 7, 6},
+  {0x2400, 0xfe00, 7, 10},
+  {0x2200, 0xfe00, 7, 18},
+  {0x2000, 0xfe00, 7, 34},
+  {0x1f00, 0xff00, 8, 7},
+  {0x1e00, 0xff00, 8, 11},
+  {0x1d00, 0xff00, 8, 19},
+  {0x1c00, 0xff00, 8, 35},
+  {0x1b00, 0xff00, 8, 13},
+  {0x1a00, 0xff00, 8, 49},
+  {0x1900, 0xff00, 8, 21},
+  {0x1800, 0xff00, 8, 41},
+  {0x1700, 0xff00, 8, 14},
+  {0x1600, 0xff00, 8, 50},
+  {0x1500, 0xff00, 8, 22},
+  {0x1400, 0xff00, 8, 42},
+  {0x1300, 0xff00, 8, 15},
+  {0x1200, 0xff00, 8, 51},
+  {0x1100, 0xff00, 8, 23},
+  {0x1000, 0xff00, 8, 43},
+  {0x0f00, 0xff00, 8, 25},
+  {0x0e00, 0xff00, 8, 37},
+  {0x0d00, 0xff00, 8, 26},
+  {0x0c00, 0xff00, 8, 38},
+  {0x0b00, 0xff00, 8, 29},
+  {0x0a00, 0xff00, 8, 45},
+  {0x0900, 0xff00, 8, 53},
+  {0x0800, 0xff00, 8, 57},
+  {0x0700, 0xff00, 8, 30},
+  {0x0600, 0xff00, 8, 46},
+  {0x0500, 0xff00, 8, 54},
+  {0x0400, 0xff00, 8, 58},
+  {0x0380, 0xff80, 9, 31},
+  {0x0300, 0xff80, 9, 47},
+  {0x0280, 0xff80, 9, 55},
+  {0x0200, 0xff80, 9, 59},
+  {0x0180, 0xff80, 9, 27},
+  {0x0100, 0xff80, 9, 39},
 };
 
 #define TCOEFF_EOB 0xffff
@@ -318,72 +327,72 @@ static const guint16 cbp_table[CBP_LEN][4] = {
 #define TCOEFF_LEN 65
 /* [code, mask, nbits, run, level] */
 static const guint16 tcoeff_table[TCOEFF_LEN][5] = {
-  {0x8000, 0xc000,  2, TCOEFF_EOB,  0},  /* Not available for first coeff */
-  /* {0x8000, 0x8000,  2,  0,  1}, */    /* Available only for first Inter coeff */
-  {0xc000, 0xc000,  3,  0,  1},          /* Not available for first coeff */
-  {0x6000, 0xe000,  4,  1,  1},
-  {0x4000, 0xf000,  5,  0,  2},
-  {0x5000, 0xf000,  5,  2,  1},
-  {0x2800, 0xf800,  6,  0,  3},
-  {0x3800, 0xf800,  6,  3,  1},
-  {0x3000, 0xf800,  6,  4,  1},
-  {0x0400, 0xfc00,  6, TCOEFF_ESC,  0},
-  {0x1800, 0xfc00,  7,  1,  2},
-  {0x1c00, 0xfc00,  7,  5,  1},
-  {0x1400, 0xfc00,  7,  6,  1},
-  {0x1000, 0xfc00,  7,  7,  1},
-  {0x0c00, 0xfe00,  8,  0,  4},
-  {0x0800, 0xfe00,  8,  2,  2},
-  {0x0e00, 0xfe00,  8,  8,  1},
-  {0x0a00, 0xfe00,  8,  9,  1},
-  {0x2600, 0xff00,  9,  0,  5},
-  {0x2100, 0xff00,  9,  0,  6},
-  {0x2500, 0xff00,  9,  1,  3},
-  {0x2400, 0xff00,  9,  3,  2},
-  {0x2700, 0xff00,  9, 10,  1},
-  {0x2300, 0xff00,  9, 11,  1},
-  {0x2200, 0xff00,  9, 12,  1},
-  {0x2000, 0xff00,  9, 13,  1},
-  {0x0280, 0xffc0, 11,  0,  7},
-  {0x0300, 0xffc0, 11,  1,  4},
-  {0x02c0, 0xffc0, 11,  2,  3},
-  {0x03c0, 0xffc0, 11,  4,  2},
-  {0x0240, 0xffc0, 11,  5,  2},
-  {0x0380, 0xffc0, 11, 14,  1},
-  {0x0340, 0xffc0, 11, 15,  1},
-  {0x0200, 0xffc0, 11, 16,  1},
-  {0x01d0, 0xfff0, 13,  0,  8},
-  {0x0180, 0xfff0, 13,  0,  9},
-  {0x0130, 0xfff0, 13,  0, 10},
-  {0x0100, 0xfff0, 13,  0, 11},
-  {0x01b0, 0xfff0, 13,  1,  5},
-  {0x0140, 0xfff0, 13,  2,  4},
-  {0x01c0, 0xfff0, 13,  3,  3},
-  {0x0120, 0xfff0, 13,  4,  3},
-  {0x01e0, 0xfff0, 13,  6,  2},
-  {0x0150, 0xfff0, 13,  7,  2},
-  {0x0110, 0xfff0, 13,  8,  2},
-  {0x01f0, 0xfff0, 13, 17,  1},
-  {0x01a0, 0xfff0, 13, 18,  1},
-  {0x0190, 0xfff0, 13, 19,  1},
-  {0x0170, 0xfff0, 13, 20,  1},
-  {0x0160, 0xfff0, 13, 21,  1},
-  {0x00d0, 0xfff8, 14,  0, 12},
-  {0x00c8, 0xfff8, 14,  0, 13},
-  {0x00c0, 0xfff8, 14,  0, 14},
-  {0x00b8, 0xfff8, 14,  0, 15},
-  {0x00b0, 0xfff8, 14,  1,  6},
-  {0x00a8, 0xfff8, 14,  1,  7},
-  {0x00a0, 0xfff8, 14,  2,  5},
-  {0x0098, 0xfff8, 14,  3,  4},
-  {0x0090, 0xfff8, 14,  5,  3},
-  {0x0088, 0xfff8, 14,  9,  2},
-  {0x0080, 0xfff8, 14, 10,  2},
-  {0x00f8, 0xfff8, 14, 22,  1},
-  {0x00f0, 0xfff8, 14, 23,  1},
-  {0x00e8, 0xfff8, 14, 24,  1},
-  {0x00e0, 0xfff8, 14, 25,  1},
-  {0x00d8, 0xfff8, 14, 26,  1},
+  {0x8000, 0xc000, 2, TCOEFF_EOB, 0},   /* Not available for first coeff */
+  /* {0x8000, 0x8000,  2,  0,  1}, *//* Available only for first Inter coeff */
+  {0xc000, 0xc000, 3, 0, 1},    /* Not available for first coeff */
+  {0x6000, 0xe000, 4, 1, 1},
+  {0x4000, 0xf000, 5, 0, 2},
+  {0x5000, 0xf000, 5, 2, 1},
+  {0x2800, 0xf800, 6, 0, 3},
+  {0x3800, 0xf800, 6, 3, 1},
+  {0x3000, 0xf800, 6, 4, 1},
+  {0x0400, 0xfc00, 6, TCOEFF_ESC, 0},
+  {0x1800, 0xfc00, 7, 1, 2},
+  {0x1c00, 0xfc00, 7, 5, 1},
+  {0x1400, 0xfc00, 7, 6, 1},
+  {0x1000, 0xfc00, 7, 7, 1},
+  {0x0c00, 0xfe00, 8, 0, 4},
+  {0x0800, 0xfe00, 8, 2, 2},
+  {0x0e00, 0xfe00, 8, 8, 1},
+  {0x0a00, 0xfe00, 8, 9, 1},
+  {0x2600, 0xff00, 9, 0, 5},
+  {0x2100, 0xff00, 9, 0, 6},
+  {0x2500, 0xff00, 9, 1, 3},
+  {0x2400, 0xff00, 9, 3, 2},
+  {0x2700, 0xff00, 9, 10, 1},
+  {0x2300, 0xff00, 9, 11, 1},
+  {0x2200, 0xff00, 9, 12, 1},
+  {0x2000, 0xff00, 9, 13, 1},
+  {0x0280, 0xffc0, 11, 0, 7},
+  {0x0300, 0xffc0, 11, 1, 4},
+  {0x02c0, 0xffc0, 11, 2, 3},
+  {0x03c0, 0xffc0, 11, 4, 2},
+  {0x0240, 0xffc0, 11, 5, 2},
+  {0x0380, 0xffc0, 11, 14, 1},
+  {0x0340, 0xffc0, 11, 15, 1},
+  {0x0200, 0xffc0, 11, 16, 1},
+  {0x01d0, 0xfff0, 13, 0, 8},
+  {0x0180, 0xfff0, 13, 0, 9},
+  {0x0130, 0xfff0, 13, 0, 10},
+  {0x0100, 0xfff0, 13, 0, 11},
+  {0x01b0, 0xfff0, 13, 1, 5},
+  {0x0140, 0xfff0, 13, 2, 4},
+  {0x01c0, 0xfff0, 13, 3, 3},
+  {0x0120, 0xfff0, 13, 4, 3},
+  {0x01e0, 0xfff0, 13, 6, 2},
+  {0x0150, 0xfff0, 13, 7, 2},
+  {0x0110, 0xfff0, 13, 8, 2},
+  {0x01f0, 0xfff0, 13, 17, 1},
+  {0x01a0, 0xfff0, 13, 18, 1},
+  {0x0190, 0xfff0, 13, 19, 1},
+  {0x0170, 0xfff0, 13, 20, 1},
+  {0x0160, 0xfff0, 13, 21, 1},
+  {0x00d0, 0xfff8, 14, 0, 12},
+  {0x00c8, 0xfff8, 14, 0, 13},
+  {0x00c0, 0xfff8, 14, 0, 14},
+  {0x00b8, 0xfff8, 14, 0, 15},
+  {0x00b0, 0xfff8, 14, 1, 6},
+  {0x00a8, 0xfff8, 14, 1, 7},
+  {0x00a0, 0xfff8, 14, 2, 5},
+  {0x0098, 0xfff8, 14, 3, 4},
+  {0x0090, 0xfff8, 14, 5, 3},
+  {0x0088, 0xfff8, 14, 9, 2},
+  {0x0080, 0xfff8, 14, 10, 2},
+  {0x00f8, 0xfff8, 14, 22, 1},
+  {0x00f0, 0xfff8, 14, 23, 1},
+  {0x00e8, 0xfff8, 14, 24, 1},
+  {0x00e0, 0xfff8, 14, 25, 1},
+  {0x00d8, 0xfff8, 14, 26, 1},
 };
 
 static ParseReturn
@@ -668,23 +677,18 @@ parse_mb_until_pos (GstRtpH261Pay * pay, GstBitReader * br, Gob * gob,
   gint count = 0;
   gboolean stop = FALSE;
   guint maxpos = *endpos;
+  Macroblock mb;
 
   GST_LOG_OBJECT (pay, "Parse until pos %u, start at pos %u, gobn %d, mba %d",
       maxpos, gst_bit_reader_get_pos (br), gob->gn, gob->last.mba);
 
   while (!stop) {
-    Macroblock mb;
-
     ret = parse_mb (pay, br, &gob->last, &mb);
 
     switch (ret) {
       case PARSE_OK:
         if (mb.endpos > maxpos && count > 0) {
           /* Don't include current MB */
-          GST_DEBUG_OBJECT (pay,
-              "Split GOBN %d after MBA %d (endpos %u, maxpos %u, nextpos %u)",
-              gob->gn, gob->last.mba, *endpos, maxpos, mb.endpos);
-          gst_bit_reader_set_pos (br, *endpos);
           stop = TRUE;
         } else {
           /* Update to include current MB */
@@ -723,6 +727,13 @@ parse_mb_until_pos (GstRtpH261Pay * pay, GstBitReader * br, Gob * gob,
     }
   }
   gob->last.gobn = gob->gn;
+
+  if (ret == PARSE_OK) {
+    GST_DEBUG_OBJECT (pay,
+        "Split GOBN %d after MBA %d (endpos %u, maxpos %u, nextpos %u)",
+        gob->gn, gob->last.mba, *endpos, maxpos, mb.endpos);
+    gst_bit_reader_set_pos (br, *endpos);
+  }
 
   return ret;
 }
@@ -789,9 +800,9 @@ gst_rtp_h261_pay_init_gobs (GstRtpH261Pay * pay, Gob * gobs, gint num_gobs,
 }
 
 static GstFlowReturn
-gst_rtp_h261_pay_fragment_push (GstRtpH261Pay * pay, const guint8 * bits,
-    guint start, guint end, const Macroblock * last_mb_in_previous_packet,
-    gboolean marker)
+gst_rtp_h261_pay_fragment_push (GstRtpH261Pay * pay, GstBuffer * buffer,
+    const guint8 * bits, guint start, guint end,
+    const Macroblock * last_mb_in_previous_packet, gboolean marker)
 {
   GstBuffer *outbuf;
   guint8 *payload;
@@ -839,12 +850,15 @@ gst_rtp_h261_pay_fragment_push (GstRtpH261Pay * pay, const guint8 * bits,
 
   gst_rtp_buffer_unmap (&rtp);
 
+  gst_rtp_copy_meta (GST_ELEMENT_CAST (pay), outbuf, buffer,
+      g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
+
   return gst_rtp_base_payload_push (GST_RTP_BASE_PAYLOAD_CAST (pay), outbuf);
 }
 
 static GstFlowReturn
-gst_rtp_h261_packetize_and_push (GstRtpH261Pay * pay, const guint8 * bits,
-    gsize len)
+gst_rtp_h261_packetize_and_push (GstRtpH261Pay * pay, GstBuffer * buffer,
+    const guint8 * bits, gsize len)
 {
   GstFlowReturn ret = GST_FLOW_OK;
   GstBitReader br_;
@@ -914,7 +928,7 @@ gst_rtp_h261_packetize_and_push (GstRtpH261Pay * pay, const guint8 * bits,
       goto beach;
 
     marker = result == PARSE_END_OF_FRAME;
-    ret = gst_rtp_h261_pay_fragment_push (pay, bits, startpos, endpos,
+    ret = gst_rtp_h261_pay_fragment_push (pay, buffer, bits, startpos, endpos,
         &last_mb_in_previous_packet, marker);
 
     last_mb_in_previous_packet = gob->last;
@@ -994,7 +1008,7 @@ gst_rtp_h261_pay_handle_buffer (GstRTPBasePayload * payload, GstBuffer * buffer)
 
   shift = pay->offset - psc_offset;
   bits = gst_rtp_h261_pay_shift_buffer (pay, map.data, map.size, shift, &len);
-  ret = gst_rtp_h261_packetize_and_push (pay, bits, len);
+  ret = gst_rtp_h261_packetize_and_push (pay, buffer, bits, len);
   g_free (bits);
 
 beach:
@@ -1009,7 +1023,8 @@ gst_rtp_h261_pay_setcaps (GstRTPBasePayload * payload, GstCaps * caps)
 {
   gboolean res;
 
-  gst_rtp_base_payload_set_options (payload, "video", TRUE, "H261", 90000);
+  gst_rtp_base_payload_set_options (payload, "video",
+      payload->pt != GST_RTP_PAYLOAD_H261, "H261", 90000);
   res = gst_rtp_base_payload_set_outcaps (payload, NULL);
 
   return res;

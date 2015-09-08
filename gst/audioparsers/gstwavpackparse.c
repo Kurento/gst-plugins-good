@@ -124,6 +124,7 @@ gst_wavpack_parse_init (GstWavpackParse * wvparse)
 {
   gst_wavpack_parse_reset (wvparse);
   GST_PAD_SET_ACCEPT_INTERSECT (GST_BASE_PARSE_SINK_PAD (wvparse));
+  GST_PAD_SET_ACCEPT_TEMPLATE (GST_BASE_PARSE_SINK_PAD (wvparse));
 }
 
 static void
@@ -686,8 +687,8 @@ gst_wavpack_parse_pre_push_frame (GstBaseParse * parse,
         GST_TAG_AUDIO_CODEC, caps);
     gst_caps_unref (caps);
 
-    gst_pad_push_event (GST_BASE_PARSE_SRC_PAD (wavpackparse),
-        gst_event_new_tag (taglist));
+    gst_base_parse_merge_tags (parse, taglist, GST_TAG_MERGE_REPLACE);
+    gst_tag_list_unref (taglist);
 
     /* also signals the end of first-frame processing */
     wavpackparse->sent_codec_tag = TRUE;

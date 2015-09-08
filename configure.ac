@@ -5,7 +5,7 @@ dnl please read gstreamer/docs/random/autotools before changing this file
 dnl initialize autoconf
 dnl releases only do -Wall, git and prerelease does -Werror too
 dnl use a three digit version number for releases, and four for git/pre
-AC_INIT([GStreamer Good Plug-ins],[1.5.2.1],[http://bugzilla.gnome.org/enter_bug.cgi?product=GStreamer],[gst-plugins-good])
+AC_INIT([GStreamer Good Plug-ins],[1.5.90],[http://bugzilla.gnome.org/enter_bug.cgi?product=GStreamer],[gst-plugins-good])
 
 AG_GST_INIT
 
@@ -43,11 +43,11 @@ AC_DEFINE_UNQUOTED(GST_API_VERSION, "$GST_API_VERSION",
   [GStreamer API Version])
 
 AG_GST_LIBTOOL_PREPARE
-AS_LIBTOOL(GST, 502, 0, 502)
+AS_LIBTOOL(GST, 590, 0, 590)
 
 dnl *** required versions of GStreamer stuff ***
-GST_REQ=1.5.2.1
-GSTPB_REQ=1.5.2.1
+GST_REQ=1.5.90
+GSTPB_REQ=1.5.90
 
 dnl *** autotools stuff ****
 
@@ -388,7 +388,7 @@ AG_GST_CHECK_FEATURE(DIRECTSOUND, [DirectSound plug-in], directsoundsink, [
   save_LIBS="$LIBS"
   CFLAGS="$CFLAGS $DIRECTSOUND_CFLAGS"
   LDFLAGS="$LDFLAGS $DIRECTSOUND_LDFLAGS"
-  LIBS="$LIBS -ldsound -ldxerr9 -luser32"
+  LIBS="$LIBS -ldsound -ldxerr9 -luser32 -lole32"
   AC_MSG_CHECKING(for DirectSound LDFLAGS)
   AC_LINK_IFELSE([AC_LANG_PROGRAM([[
 #include <windows.h>
@@ -397,6 +397,7 @@ AG_GST_CHECK_FEATURE(DIRECTSOUND, [DirectSound plug-in], directsoundsink, [
 ]], [[
   DXGetErrorString9 (0);
   DirectSoundCreate(NULL, NULL, NULL);
+  CLSIDFromString(NULL, NULL);
 ]])
 ],
     [HAVE_DIRECTSOUND="yes"],
@@ -408,7 +409,7 @@ AG_GST_CHECK_FEATURE(DIRECTSOUND, [DirectSound plug-in], directsoundsink, [
 
   if test "x$HAVE_DIRECTSOUND" = "xyes";  then
     dnl this is much more than we want
-    DIRECTSOUND_LIBS="-ldsound -ldxerr9 -luser32"
+    DIRECTSOUND_LIBS="-ldsound -ldxerr9 -luser32 -lole32"
     AC_SUBST(DIRECTSOUND_CFLAGS)
     AC_SUBST(DIRECTSOUND_LDFLAGS)
     AC_SUBST(DIRECTSOUND_LIBS)

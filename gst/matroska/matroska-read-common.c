@@ -757,6 +757,7 @@ gst_matroska_read_common_parse_toc_tag (GstTocEntry * entry,
   }
 
   gst_toc_entry_merge_tags (entry, etags, GST_TAG_MERGE_APPEND);
+  gst_tag_list_unref (etags);
 
   cur = gst_toc_entry_get_sub_entries (entry);
   while (cur != NULL) {
@@ -2034,6 +2035,7 @@ gst_matroska_read_common_parse_metadata_id_simple_tag (GstMatroskaReadCommon *
     key_val = g_strdup_printf ("%s=%s", name_with_parent, value);
     gst_tag_list_add (*p_taglist, GST_TAG_MERGE_APPEND,
         GST_TAG_EXTENDED_COMMENT, key_val, NULL);
+    g_free (key_val);
   } else if (tag && value && *value != '\0') {
     gboolean matched = FALSE;
     guint i;
@@ -2078,6 +2080,7 @@ gst_matroska_read_common_parse_metadata_id_simple_tag (GstMatroskaReadCommon *
       key_val = g_strdup_printf ("%s=%s", tag, value);
       gst_tag_list_add (*p_taglist, GST_TAG_MERGE_APPEND,
           GST_TAG_EXTENDED_COMMENT, key_val, NULL);
+      g_free (key_val);
     }
   }
 
@@ -2390,9 +2393,21 @@ gst_matroska_read_common_parse_metadata_id_tag (GstMatroskaReadCommon * common,
         }
       }
       if (!found) {
-        GST_FIXME_OBJECT (common->sinkpad,
+        /* Cache the track taglist: possibly belongs to a track that will be parsed
+           later in gst_matroska_demux.c:gst_matroska_demux_add_stream (...) */
+        gpointer track_uid = GUINT_TO_POINTER (tgt);
+        GstTagList *cached_taglist =
+            g_hash_table_lookup (common->cached_track_taglists, track_uid);
+        if (cached_taglist)
+          gst_tag_list_insert (cached_taglist, taglist, GST_TAG_MERGE_REPLACE);
+        else {
+          gst_tag_list_ref (taglist);
+          g_hash_table_insert (common->cached_track_taglists, track_uid,
+              taglist);
+        }
+        GST_DEBUG_OBJECT (common->sinkpad,
             "Found track-specific tag(s), but track %" G_GUINT64_FORMAT
-            " is not known (yet?)", tgt);
+            " is not known yet, caching", tgt);
       }
     }
   } else
@@ -2842,6 +2857,9 @@ gst_matroska_read_common_init (GstMatroskaReadCommon * ctx)
   ctx->index = NULL;
   ctx->global_tags = NULL;
   ctx->adapter = gst_adapter_new ();
+  ctx->cached_track_taglists =
+      g_hash_table_new_full (NULL, NULL, NULL,
+      (GDestroyNotify) gst_tag_list_unref);
 }
 
 void
@@ -2858,6 +2876,9 @@ gst_matroska_read_common_finalize (GstMatroskaReadCommon * ctx)
   }
 
   g_object_unref (ctx->adapter);
+  g_hash_table_remove_all (ctx->cached_track_taglists);
+  g_hash_table_unref (ctx->cached_track_taglists);
+
 }
 
 void

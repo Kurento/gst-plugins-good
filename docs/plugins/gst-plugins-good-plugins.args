@@ -994,7 +994,7 @@
 <RANGE></RANGE>
 <FLAGS>rw</FLAGS>
 <NICK>Use pipeline clock</NICK>
-<BLURB>Use the pipeline running-time to set the NTP time in the RTCP SR messages.</BLURB>
+<BLURB>Use the pipeline running-time to set the NTP time in the RTCP SR messages(DEPRECATED: Use ntp-time-source property).</BLURB>
 <DEFAULT>FALSE</DEFAULT>
 </ARG>
 
@@ -1046,6 +1046,26 @@
 <NICK>TLS interaction</NICK>
 <BLURB>A GTlsInteraction object to promt the user for password or certificate.</BLURB>
 <DEFAULT></DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstRTSPSrc::ntp-time-source</NAME>
+<TYPE>GstRTSPSrcNtpTimeSource</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>NTP Time Source</NICK>
+<BLURB>NTP time source for RTCP packets.</BLURB>
+<DEFAULT>NTP time based on realtime clock</DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstRTSPSrc::user-agent</NAME>
+<TYPE>gchar*</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>User Agent</NICK>
+<BLURB>The User-Agent string to send to the server.</BLURB>
+<DEFAULT>"GStreamer/1.5.90"</DEFAULT>
 </ARG>
 
 <ARG>
@@ -4306,6 +4326,16 @@
 <NICK>TLS database</NICK>
 <BLURB>TLS database with anchor certificate authorities used to validate the server certificate.</BLURB>
 <DEFAULT></DEFAULT>
+</ARG>
+
+<ARG>
+<NAME>GstSoupHTTPSrc::method</NAME>
+<TYPE>gchar*</TYPE>
+<RANGE></RANGE>
+<FLAGS>rw</FLAGS>
+<NICK>HTTP method</NICK>
+<BLURB>The HTTP method to use (GET, HEAD, OPTIONS, etc).</BLURB>
+<DEFAULT>NULL</DEFAULT>
 </ARG>
 
 <ARG>
@@ -21344,7 +21374,7 @@
 <RANGE></RANGE>
 <FLAGS>rw</FLAGS>
 <NICK>Use pipeline clock</NICK>
-<BLURB>Use the pipeline running-time to set the NTP time in the RTCP SR messages (DEPRECATED: Use ntp-source property).</BLURB>
+<BLURB>Use the pipeline running-time to set the NTP time in the RTCP SR messages (DEPRECATED: Use ntp-time-source property).</BLURB>
 <DEFAULT>FALSE</DEFAULT>
 </ARG>
 
@@ -21674,7 +21704,7 @@
 <RANGE></RANGE>
 <FLAGS>rw</FLAGS>
 <NICK>Use pipeline clock</NICK>
-<BLURB>Use the pipeline running-time to set the NTP time in the RTCP SR messages (DEPRECATED: Use ntp-source property).</BLURB>
+<BLURB>Use the pipeline running-time to set the NTP time in the RTCP SR messages (DEPRECATED: Use ntp-time-source property).</BLURB>
 <DEFAULT>FALSE</DEFAULT>
 </ARG>
 
@@ -23904,7 +23934,7 @@
 <RANGE></RANGE>
 <FLAGS>rw</FLAGS>
 <NICK>Multipass Cache File</NICK>
-<BLURB>Multipass cache file.</BLURB>
+<BLURB>Multipass cache file. If stream caps reinited, multiple files will be created: file, file.1, file.2, ... and so on.</BLURB>
 <DEFAULT>"multipass.cache"</DEFAULT>
 </ARG>
 
@@ -24814,7 +24844,7 @@
 <RANGE></RANGE>
 <FLAGS>rw</FLAGS>
 <NICK>Multipass Cache File</NICK>
-<BLURB>Multipass cache file.</BLURB>
+<BLURB>Multipass cache file. If stream caps reinited, multiple files will be created: file, file.1, file.2, ... and so on.</BLURB>
 <DEFAULT>"multipass.cache"</DEFAULT>
 </ARG>
 

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: gst-plugins-good 0.10.28.2\n"
 "Report-Msgid-Bugs-To: http://bugzilla.gnome.org/\n"
-"POT-Creation-Date: 2015-06-24 22:51+0200\n"
+"POT-Creation-Date: 2015-08-19 12:42+0300\n"
 "PO-Revision-Date: 2012-05-05 19:05+0100\n"
 "Last-Translator: Savvas Radevic <vicedar@gmail.com>\n"
 "Language-Team: Greek <team@lists.gnome.gr>\n"
@@ -48,8 +48,9 @@ msgstr "Δεν ήταν δυνατή η σύνδεση με τον διακομ�
 msgid "Secure connection setup failed."
 msgstr "Αποτυχία εκκίνησης ασφαλούς σύνδεσης."
 
+#, fuzzy
 msgid ""
-"A network error occured, or the server closed the connection unexpectedly."
+"A network error occurred, or the server closed the connection unexpectedly."
 msgstr ""
 "Προέκυψε ένα σφάλμα δικτύου ή ο διακομιστής έκλεισε ξαφνικά τη σύνδεση."
 

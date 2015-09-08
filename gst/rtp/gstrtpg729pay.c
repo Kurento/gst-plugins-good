@@ -32,8 +32,10 @@
 #include <string.h>
 #include <gst/rtp/gstrtpbuffer.h>
 #include <gst/base/gstadapter.h>
+#include <gst/audio/audio.h>
 
 #include "gstrtpg729pay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpg729pay_debug);
 #define GST_CAT_DEFAULT (rtpg729pay_debug)
@@ -121,7 +123,6 @@ gst_rtp_g729_pay_init (GstRTPG729Pay * pay)
   GstRTPBasePayload *payload = GST_RTP_BASE_PAYLOAD (pay);
 
   payload->pt = GST_RTP_PAYLOAD_G729;
-  gst_rtp_base_payload_set_options (payload, "audio", FALSE, "G729", 8000);
 
   pay->adapter = gst_adapter_new ();
 }
@@ -140,15 +141,9 @@ static gboolean
 gst_rtp_g729_pay_set_caps (GstRTPBasePayload * payload, GstCaps * caps)
 {
   gboolean res;
-  GstStructure *structure;
-  gint pt;
 
-  structure = gst_caps_get_structure (caps, 0);
-  if (!gst_structure_get_int (structure, "payload", &pt))
-    pt = GST_RTP_PAYLOAD_G729;
-
-  payload->pt = pt;
-  payload->dynamic = pt != GST_RTP_PAYLOAD_G729;
+  gst_rtp_base_payload_set_options (payload, "audio",
+      payload->pt != GST_RTP_PAYLOAD_G729, "G729", 8000);
 
   res = gst_rtp_base_payload_set_outcaps (payload, NULL);
 
@@ -195,6 +190,8 @@ gst_rtp_g729_pay_push (GstRTPG729Pay * rtpg729pay, GstBuffer * buf)
   gst_rtp_buffer_unmap (&rtp);
 
   /* append payload */
+  gst_rtp_copy_meta (GST_ELEMENT_CAST (basepayload), outbuf, buf,
+      g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
   outbuf = gst_buffer_append (outbuf, buf);
 
   ret = gst_rtp_base_payload_push (basepayload, outbuf);
@@ -328,7 +325,7 @@ gst_rtp_g729_pay_handle_buffer (GstRTPBasePayload * payload, GstBuffer * buf)
     rtpg729pay->next_ts = timestamp;
 
   if (available == 0 && size >= min_payload_len && size <= max_payload_len) {
-    ret = gst_rtp_g729_pay_push (rtpg729pay, gst_buffer_ref (buf));
+    ret = gst_rtp_g729_pay_push (rtpg729pay, buf);
     return ret;
   }
 

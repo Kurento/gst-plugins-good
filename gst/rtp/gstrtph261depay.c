@@ -45,8 +45,10 @@
 #include <string.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 #include "gstrtph261depay.h"
 #include "gstrtph261pay.h"      /* GstRtpH261PayHeader */
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtph261depay_debug);
 #define GST_CAT_DEFAULT (rtph261depay_debug)
@@ -79,7 +81,7 @@ G_DEFINE_TYPE (GstRtpH261Depay, gst_rtp_h261_depay,
 #define parent_class gst_rtp_h261_depay_parent_class
 
 static GstBuffer *
-gst_rtp_h261_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
+gst_rtp_h261_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
 {
   GstRtpH261Depay *depay;
   GstBuffer *outbuf = NULL;
@@ -88,28 +90,24 @@ gst_rtp_h261_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
   const guint header_len = GST_RTP_H261_PAYLOAD_HEADER_LEN;
   gboolean marker;
   GstRtpH261PayHeader *header;
-  GstRTPBuffer rtp = GST_RTP_BUFFER_INIT;
 
   depay = GST_RTP_H261_DEPAY (depayload);
 
-  if (GST_BUFFER_IS_DISCONT (buf)) {
+  if (GST_BUFFER_IS_DISCONT (rtp->buffer)) {
     GST_DEBUG_OBJECT (depay, "Discont buffer, flushing adapter");
     gst_adapter_clear (depay->adapter);
     depay->leftover = NO_LEFTOVER;
     depay->start = FALSE;
   }
 
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
+  payload_len = gst_rtp_buffer_get_payload_len (rtp);
+  payload = gst_rtp_buffer_get_payload (rtp);
 
-  payload_len = gst_rtp_buffer_get_payload_len (&rtp);
-  payload = gst_rtp_buffer_get_payload (&rtp);
-
-  marker = gst_rtp_buffer_get_marker (&rtp);
+  marker = gst_rtp_buffer_get_marker (rtp);
 
   if (payload_len < 4) {
     GST_WARNING_OBJECT (depay,
         "Dropping packet with payload length invalid length");
-    gst_rtp_buffer_unmap (&rtp);
     return NULL;
   }
 
@@ -148,12 +146,12 @@ gst_rtp_h261_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
   if (header->ebit == 0) {
     /* H.261 stream ends on byte boundary, take entire packet */
     gst_adapter_push (depay->adapter,
-        gst_rtp_buffer_get_payload_subbuffer (&rtp, header_len, payload_len));
+        gst_rtp_buffer_get_payload_subbuffer (rtp, header_len, payload_len));
   } else {
     /* Take the entire buffer except for the last byte, which will be kept to
      * merge with next packet */
     gst_adapter_push (depay->adapter,
-        gst_rtp_buffer_get_payload_subbuffer (&rtp, header_len,
+        gst_rtp_buffer_get_payload_subbuffer (rtp, header_len,
             payload_len - 1));
     depay->leftover = payload[payload_len - 1] & (0xFF << header->ebit);
   }
@@ -172,6 +170,8 @@ skip:
 
       avail = gst_adapter_available (depay->adapter);
       outbuf = gst_adapter_take_buffer (depay->adapter, avail);
+      gst_rtp_drop_meta (GST_ELEMENT_CAST (depay), outbuf,
+          g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
 
       /* Note that the I flag does not mean intra frame, but that the entire
        * stream is intra coded. */
@@ -186,7 +186,6 @@ skip:
       depay->start = TRUE;
     }
   }
-  gst_rtp_buffer_unmap (&rtp);
 
   return outbuf;
 }
@@ -270,7 +269,7 @@ gst_rtp_h261_depay_class_init (GstRtpH261DepayClass * klass)
       "Extracts H261 video from RTP packets (RFC 4587)",
       "Stian Selnes <stian@pexip.com>");
 
-  gstrtpbasedepayload_class->process = gst_rtp_h261_depay_process;
+  gstrtpbasedepayload_class->process_rtp_packet = gst_rtp_h261_depay_process;
   gstrtpbasedepayload_class->set_caps = gst_rtp_h261_depay_setcaps;
 
   gobject_class->dispose = gst_rtp_h261_depay_dispose;

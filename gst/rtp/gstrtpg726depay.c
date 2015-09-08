@@ -28,8 +28,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/audio/audio.h>
 
 #include "gstrtpg726depay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpg726depay_debug);
 #define GST_CAT_DEFAULT (rtpg726depay_debug)
@@ -82,7 +84,7 @@ static void gst_rtp_g726_depay_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec);
 
 static GstBuffer *gst_rtp_g726_depay_process (GstRTPBaseDepayload * depayload,
-    GstBuffer * buf);
+    GstRTPBuffer * rtp);
 static gboolean gst_rtp_g726_depay_setcaps (GstRTPBaseDepayload * depayload,
     GstCaps * caps);
 
@@ -122,7 +124,7 @@ gst_rtp_g726_depay_class_init (GstRtpG726DepayClass * klass)
       "Extracts G.726 audio from RTP packets",
       "Axis Communications <dev-gstreamer@axis.com>");
 
-  gstrtpbasedepayload_class->process = gst_rtp_g726_depay_process;
+  gstrtpbasedepayload_class->process_rtp_packet = gst_rtp_g726_depay_process;
   gstrtpbasedepayload_class->set_caps = gst_rtp_g726_depay_setcaps;
 }
 
@@ -207,40 +209,42 @@ unknown_encoding:
 
 
 static GstBuffer *
-gst_rtp_g726_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
+gst_rtp_g726_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
 {
   GstRtpG726Depay *depay;
   GstBuffer *outbuf = NULL;
   gboolean marker;
-  GstRTPBuffer rtp = { NULL };
 
   depay = GST_RTP_G726_DEPAY (depayload);
 
-  gst_rtp_buffer_map (buf, GST_MAP_READWRITE, &rtp);
-
-  marker = gst_rtp_buffer_get_marker (&rtp);
+  marker = gst_rtp_buffer_get_marker (rtp);
 
   GST_DEBUG ("process : got %" G_GSIZE_FORMAT " bytes, mark %d ts %u seqn %d",
-      gst_buffer_get_size (buf), marker,
-      gst_rtp_buffer_get_timestamp (&rtp), gst_rtp_buffer_get_seq (&rtp));
+      gst_buffer_get_size (rtp->buffer), marker,
+      gst_rtp_buffer_get_timestamp (rtp), gst_rtp_buffer_get_seq (rtp));
 
   if (depay->aal2 || depay->force_aal2) {
     /* AAL2, we can just copy the bytes */
-    outbuf = gst_rtp_buffer_get_payload_buffer (&rtp);
+    outbuf = gst_rtp_buffer_get_payload_buffer (rtp);
     if (!outbuf)
       goto bad_len;
+    gst_rtp_drop_meta (GST_ELEMENT_CAST (depay), outbuf,
+        g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
   } else {
     guint8 *in, *out, tmp;
     guint len;
     GstMapInfo map;
 
-    in = gst_rtp_buffer_get_payload (&rtp);
-    len = gst_rtp_buffer_get_payload_len (&rtp);
+    in = gst_rtp_buffer_get_payload (rtp);
+    len = gst_rtp_buffer_get_payload_len (rtp);
 
-    outbuf = gst_rtp_buffer_get_payload_buffer (&rtp);
+    outbuf = gst_rtp_buffer_get_payload_buffer (rtp);
     if (!outbuf)
       goto bad_len;
     outbuf = gst_buffer_make_writable (outbuf);
+
+    gst_rtp_drop_meta (GST_ELEMENT_CAST (depay), outbuf,
+        g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
 
     gst_buffer_map (outbuf, &map, GST_MAP_WRITE);
     out = map.data;
@@ -334,8 +338,6 @@ gst_rtp_g726_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
     gst_buffer_unmap (outbuf, &map);
   }
 
-  gst_rtp_buffer_unmap (&rtp);
-
   if (marker) {
     /* mark start of talkspurt with RESYNC */
     GST_BUFFER_FLAG_SET (outbuf, GST_BUFFER_FLAG_RESYNC);
@@ -345,10 +347,8 @@ gst_rtp_g726_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
 
 bad_len:
   {
-    gst_rtp_buffer_unmap (&rtp);
     return NULL;
   }
-
 }
 
 static void

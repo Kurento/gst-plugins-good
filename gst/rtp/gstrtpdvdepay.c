@@ -33,6 +33,7 @@
 #include <gst/gst.h>
 
 #include "gstrtpdvdepay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY (rtpdvdepay_debug);
 #define GST_CAT_DEFAULT (rtpdvdepay_debug)
@@ -75,7 +76,7 @@ static GstStateChangeReturn
 gst_rtp_dv_depay_change_state (GstElement * element, GstStateChange transition);
 
 static GstBuffer *gst_rtp_dv_depay_process (GstRTPBaseDepayload * base,
-    GstBuffer * in);
+    GstRTPBuffer * rtp);
 static gboolean gst_rtp_dv_depay_setcaps (GstRTPBaseDepayload * depayload,
     GstCaps * caps);
 
@@ -106,7 +107,7 @@ gst_rtp_dv_depay_class_init (GstRTPDVDepayClass * klass)
       "Depayloads DV from RTP packets (RFC 3189)",
       "Marcel Moreaux <marcelm@spacelabs.nl>, Wim Taymans <wim.taymans@gmail.com>");
 
-  gstrtpbasedepayload_class->process =
+  gstrtpbasedepayload_class->process_rtp_packet =
       GST_DEBUG_FUNCPTR (gst_rtp_dv_depay_process);
   gstrtpbasedepayload_class->set_caps =
       GST_DEBUG_FUNCPTR (gst_rtp_dv_depay_setcaps);
@@ -280,30 +281,35 @@ calculate_difblock_location (guint8 * block)
   return location;
 }
 
+static gboolean
+foreach_metadata_drop (GstBuffer * inbuf, GstMeta ** meta, gpointer user_data)
+{
+  *meta = NULL;
+  return TRUE;
+}
+
 /* Process one RTP packet. Accumulate RTP payload in the proper place in a DV
  * frame, and return that frame if we detect a new frame, or NULL otherwise.
  * We assume a DV frame is 144000 bytes. That should accomodate PAL as well as
  * NTSC.
  */
 static GstBuffer *
-gst_rtp_dv_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
+gst_rtp_dv_depay_process (GstRTPBaseDepayload * base, GstRTPBuffer * rtp)
 {
   GstBuffer *out = NULL;
+  GstBuffer *payload_buf;
   guint8 *payload;
   guint32 rtp_ts;
   guint payload_len, location;
   GstRTPDVDepay *dvdepay = GST_RTP_DV_DEPAY (base);
   gboolean marker;
-  GstRTPBuffer rtp = { NULL, };
   GstMapInfo map;
 
-  gst_rtp_buffer_map (in, GST_MAP_READ, &rtp);
-
-  marker = gst_rtp_buffer_get_marker (&rtp);
+  marker = gst_rtp_buffer_get_marker (rtp);
 
   /* Check if the received packet contains (the start of) a new frame, we do
    * this by checking the RTP timestamp. */
-  rtp_ts = gst_rtp_buffer_get_timestamp (&rtp);
+  rtp_ts = gst_rtp_buffer_get_timestamp (rtp);
 
   /* we cannot copy the packet yet if the marker is set, we will do that below
    * after taking out the data */
@@ -314,11 +320,13 @@ gst_rtp_dv_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
 
     /* return copy of accumulator. */
     out = gst_buffer_copy (dvdepay->acc);
+    gst_buffer_foreach_meta (dvdepay->acc, foreach_metadata_drop, NULL);
   }
 
   /* Extract the payload */
-  payload_len = gst_rtp_buffer_get_payload_len (&rtp);
-  payload = gst_rtp_buffer_get_payload (&rtp);
+  payload_len = gst_rtp_buffer_get_payload_len (rtp);
+  payload = gst_rtp_buffer_get_payload (rtp);
+  payload_buf = gst_rtp_buffer_get_payload_buffer (rtp);
 
   /* copy all DIF chunks in their place. */
   gst_buffer_map (dvdepay->acc, &map, GST_MAP_READWRITE);
@@ -344,14 +352,16 @@ gst_rtp_dv_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
       /* And copy it in, provided the location is sane. */
       if (offset <= dvdepay->frame_size - 80) {
         memcpy (map.data + offset, payload, 80);
+        gst_rtp_copy_meta (GST_ELEMENT_CAST (dvdepay), dvdepay->acc,
+            payload_buf, 0);
       }
     }
 
     payload += 80;
     payload_len -= 80;
   }
-  gst_rtp_buffer_unmap (&rtp);
   gst_buffer_unmap (dvdepay->acc, &map);
+  gst_buffer_unref (payload_buf);
 
   if (marker) {
     GST_DEBUG_OBJECT (dvdepay, "marker bit complete frame %u", rtp_ts);
@@ -361,6 +371,7 @@ gst_rtp_dv_depay_process (GstRTPBaseDepayload * base, GstBuffer * in)
        * will change the timestamp but we won't copy the accumulator again because
        * we set the prev_ts to -1. */
       out = gst_buffer_copy (dvdepay->acc);
+      gst_buffer_foreach_meta (dvdepay->acc, foreach_metadata_drop, NULL);
     } else {
       GST_WARNING_OBJECT (dvdepay, "waiting for frame headers %02x",
           dvdepay->header_mask);

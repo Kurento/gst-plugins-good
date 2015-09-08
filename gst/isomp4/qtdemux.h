@@ -117,10 +117,10 @@ struct _GstQTDemux {
   /* configured playback region */
   GstSegment segment;
   GstEvent *pending_newsegment;
-  gboolean upstream_newsegment; /* qtdemux received upstream
-                                 * newsegment in TIME format which likely
-                                 * means that upstream is driving the pipeline
-                                 * (adaptive demuxers) */
+  gboolean upstream_format_is_time; /* qtdemux received upstream
+                                     * newsegment in TIME format which likely
+                                     * means that upstream is driving the pipeline
+                                     * (adaptive demuxers / dlna) */
   gint64 seek_offset;
   gint64 push_seek_start;
   gint64 push_seek_stop;
@@ -145,6 +145,10 @@ struct _GstQTDemux {
   guint64 fragment_start_offset;
     
   gint64 chapters_track_id;
+
+  /* protection support */
+  GPtrArray *protection_system_ids; /* Holds identifiers of all content protection systems for all tracks */
+  GQueue protection_event_queue; /* holds copy of upstream protection events */
 };
 
 struct _GstQTDemuxClass {

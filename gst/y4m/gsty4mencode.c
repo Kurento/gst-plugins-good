@@ -28,7 +28,7 @@
  * <para>
  * (write everything in one line, without the backslash characters)
  * <programlisting>
- * gst-launch-0.10 videotestsrc num-buffers=250 \
+ * gst-launch-1.0 videotestsrc num-buffers=250 \
  * ! 'video/x-raw,format=(string)I420,width=320,height=240,framerate=(fraction)25/1' \
  * ! y4menc ! filesink location=test.yuv
  * </programlisting>
@@ -114,6 +114,8 @@ gst_y4m_encode_class_init (GstY4mEncodeClass * klass)
 static void
 gst_y4m_encode_init (GstY4mEncode * filter)
 {
+  GST_PAD_SET_ACCEPT_TEMPLATE (GST_VIDEO_ENCODER_SINK_PAD (filter));
+
   /* init properties */
   gst_y4m_encode_reset (filter);
 }

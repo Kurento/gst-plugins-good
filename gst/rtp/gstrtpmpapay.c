@@ -24,8 +24,10 @@
 #include <string.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/audio/audio.h>
 
 #include "gstrtpmpapay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpmpapay_debug);
 #define GST_CAT_DEFAULT (rtpmpapay_debug)
@@ -104,6 +106,8 @@ static void
 gst_rtp_mpa_pay_init (GstRtpMPAPay * rtpmpapay)
 {
   rtpmpapay->adapter = gst_adapter_new ();
+
+  GST_RTP_BASE_PAYLOAD (rtpmpapay)->pt = GST_RTP_PAYLOAD_MPA;
 }
 
 static void
@@ -133,7 +137,8 @@ gst_rtp_mpa_pay_setcaps (GstRTPBasePayload * payload, GstCaps * caps)
 {
   gboolean res;
 
-  gst_rtp_base_payload_set_options (payload, "audio", TRUE, "MPA", 90000);
+  gst_rtp_base_payload_set_options (payload, "audio",
+      payload->pt != GST_RTP_PAYLOAD_MPA, "MPA", 90000);
   res = gst_rtp_base_payload_set_outcaps (payload, NULL);
 
   return res;
@@ -238,6 +243,8 @@ gst_rtp_mpa_pay_flush (GstRtpMPAPay * rtpmpapay)
     gst_rtp_buffer_unmap (&rtp);
 
     paybuf = gst_adapter_take_buffer_fast (rtpmpapay->adapter, payload_len);
+    gst_rtp_copy_meta (GST_ELEMENT_CAST (rtpmpapay), outbuf, paybuf,
+        g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
     outbuf = gst_buffer_append (outbuf, paybuf);
 
     GST_BUFFER_PTS (outbuf) = rtpmpapay->first_ts;

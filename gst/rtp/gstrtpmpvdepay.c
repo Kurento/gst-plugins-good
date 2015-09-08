@@ -22,9 +22,11 @@
 #endif
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 
 #include <string.h>
 #include "gstrtpmpvdepay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpmpvdepay_debug);
 #define GST_CAT_DEFAULT (rtpmpvdepay_debug)
@@ -57,7 +59,7 @@ G_DEFINE_TYPE (GstRtpMPVDepay, gst_rtp_mpv_depay, GST_TYPE_RTP_BASE_DEPAYLOAD);
 static gboolean gst_rtp_mpv_depay_setcaps (GstRTPBaseDepayload * depayload,
     GstCaps * caps);
 static GstBuffer *gst_rtp_mpv_depay_process (GstRTPBaseDepayload * depayload,
-    GstBuffer * buf);
+    GstRTPBuffer * rtp);
 
 static void
 gst_rtp_mpv_depay_class_init (GstRtpMPVDepayClass * klass)
@@ -79,7 +81,7 @@ gst_rtp_mpv_depay_class_init (GstRtpMPVDepayClass * klass)
       "Wim Taymans <wim.taymans@gmail.com>");
 
   gstrtpbasedepayload_class->set_caps = gst_rtp_mpv_depay_setcaps;
-  gstrtpbasedepayload_class->process = gst_rtp_mpv_depay_process;
+  gstrtpbasedepayload_class->process_rtp_packet = gst_rtp_mpv_depay_process;
 
   GST_DEBUG_CATEGORY_INIT (rtpmpvdepay_debug, "rtpmpvdepay", 0,
       "MPEG Video RTP Depayloader");
@@ -114,23 +116,20 @@ gst_rtp_mpv_depay_setcaps (GstRTPBaseDepayload * depayload, GstCaps * caps)
 }
 
 static GstBuffer *
-gst_rtp_mpv_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
+gst_rtp_mpv_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
 {
   GstRtpMPVDepay *rtpmpvdepay;
   GstBuffer *outbuf = NULL;
-  GstRTPBuffer rtp = { NULL };
 
   rtpmpvdepay = GST_RTP_MPV_DEPAY (depayload);
-
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
 
   {
     gint payload_len, payload_header;
     guint8 *payload;
     guint8 T;
 
-    payload_len = gst_rtp_buffer_get_payload_len (&rtp);
-    payload = gst_rtp_buffer_get_payload (&rtp);
+    payload_len = gst_rtp_buffer_get_payload_len (rtp);
+    payload = gst_rtp_buffer_get_payload (rtp);
     payload_header = 0;
 
     if (payload_len <= 4)
@@ -169,16 +168,17 @@ gst_rtp_mpv_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
       payload += 4;
     }
 
-    outbuf = gst_rtp_buffer_get_payload_subbuffer (&rtp, payload_header, -1);
+    outbuf = gst_rtp_buffer_get_payload_subbuffer (rtp, payload_header, -1);
 
     if (outbuf) {
       GST_DEBUG_OBJECT (rtpmpvdepay,
           "gst_rtp_mpv_depay_chain: pushing buffer of size %" G_GSIZE_FORMAT,
           gst_buffer_get_size (outbuf));
+      gst_rtp_drop_meta (GST_ELEMENT_CAST (rtpmpvdepay), outbuf,
+          g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
+
     }
   }
-
-  gst_rtp_buffer_unmap (&rtp);
 
   return outbuf;
 
@@ -187,8 +187,6 @@ empty_packet:
   {
     GST_ELEMENT_WARNING (rtpmpvdepay, STREAM, DECODE,
         (NULL), ("Empty payload."));
-    gst_rtp_buffer_unmap (&rtp);
-    gst_buffer_unref (buf);
     return NULL;
   }
 }

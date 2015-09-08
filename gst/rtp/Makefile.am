@@ -50,6 +50,8 @@ libgstrtp_la_SOURCES = \
 	gstrtpj2kpay.c \
 	gstrtpjpegdepay.c \
 	gstrtpjpegpay.c \
+	gstrtpklvdepay.c \
+	gstrtpklvpay.c \
 	gstrtpL16depay.c \
 	gstrtpL16pay.c \
 	gstrtpL24depay.c \
@@ -82,7 +84,8 @@ libgstrtp_la_SOURCES = \
 	gstrtpvrawdepay.c  \
 	gstrtpvrawpay.c \
 	gstrtpstreampay.c \
-	gstrtpstreamdepay.c
+	gstrtpstreamdepay.c \
+	gstrtputils.c
 
 libgstrtp_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) \
 	$(GST_CFLAGS) -Dvp8_norm=gst_rtpvp8_vp8_norm \
@@ -153,6 +156,8 @@ noinst_HEADERS =			\
 	gstrtpj2kpay.h \
 	gstrtpjpegdepay.h \
 	gstrtpjpegpay.h \
+	gstrtpklvdepay.h \
+	gstrtpklvpay.h \
 	gstrtpmp1sdepay.h \
 	gstrtpmp2tdepay.h \
 	gstrtpmp2tpay.h \
@@ -181,6 +186,7 @@ noinst_HEADERS =			\
 	gstrtpvrawdepay.h \
 	gstrtpvrawpay.h \
 	gstrtpstreampay.h \
-	gstrtpstreamdepay.h
+	gstrtpstreamdepay.h \
+	gstrtputils.h
 
 EXTRA_DIST = dboolhuff.LICENSE

@@ -239,7 +239,7 @@ gst_matroska_demux_class_init (GstMatroskaDemuxClass * klass)
   gst_element_class_set_static_metadata (gstelement_class, "Matroska demuxer",
       "Codec/Demuxer",
       "Demuxes Matroska/WebM streams into video/audio/subtitles",
-      "GStreamer maintainers <gstreamer-devel@lists.sourceforge.net>");
+      "GStreamer maintainers <gstreamer-devel@lists.freedesktop.org>");
 }
 
 static void
@@ -397,6 +397,7 @@ gst_matroska_demux_add_stream (GstMatroskaDemux * demux, GstEbmlRead * ebml)
   GstPadTemplate *templ = NULL;
   GstStreamFlags stream_flags;
   GstCaps *caps = NULL;
+  GstTagList *cached_taglist;
   gchar *padname = NULL;
   GstFlowReturn ret;
   guint32 id, riff_fourcc = 0;
@@ -1127,6 +1128,13 @@ gst_matroska_demux_add_stream (GstMatroskaDemux * demux, GstEbmlRead * ebml)
 
     return ret;
   }
+
+  /* check for a cached track taglist  */
+  cached_taglist =
+      (GstTagList *) g_hash_table_lookup (demux->common.cached_track_taglists,
+      GUINT_TO_POINTER (context->uid));
+  if (cached_taglist)
+    gst_tag_list_insert (context->tags, cached_taglist, GST_TAG_MERGE_APPEND);
 
   /* now create the GStreamer connectivity */
   switch (context->type) {
@@ -2986,25 +2994,16 @@ gst_matroska_demux_check_subtitle_buffer (GstElement * element,
   if (!gst_buffer_get_size (*buf) || !gst_buffer_map (*buf, &map, GST_MAP_READ))
     return GST_FLOW_OK;
 
-  /* Need \0-terminator at the end */
-  if (map.data[map.size - 1] != '\0') {
-    newbuf = gst_buffer_new_and_alloc (map.size + 1);
-
-    /* Copy old buffer and add a 0 at the end */
-    gst_buffer_fill (newbuf, 0, map.data, map.size);
-    gst_buffer_memset (newbuf, map.size, 0, 1);
+  /* The subtitle buffer we push out should not include a NUL terminator as
+   * part of the data. */
+  if (map.data[map.size - 1] == '\0') {
+    gst_buffer_set_size (*buf, map.size - 1);
     gst_buffer_unmap (*buf, &map);
-
-    gst_buffer_copy_into (newbuf, *buf,
-        GST_BUFFER_COPY_TIMESTAMPS | GST_BUFFER_COPY_FLAGS |
-        GST_BUFFER_COPY_META, 0, -1);
-    gst_buffer_unref (*buf);
-    *buf = newbuf;
     gst_buffer_map (*buf, &map, GST_MAP_READ);
   }
 
   if (!sub_stream->invalid_utf8) {
-    if (g_utf8_validate ((gchar *) map.data, map.size - 1, NULL)) {
+    if (g_utf8_validate ((gchar *) map.data, map.size, NULL)) {
       goto next;
     }
     GST_WARNING_OBJECT (element, "subtitle stream %" G_GUINT64_FORMAT
@@ -5013,6 +5012,7 @@ gst_matroska_demux_video_caps (GstMatroskaTrackVideoContext *
         videocontext->pixel_height);
     caps = gst_video_info_to_caps (&info);
     *codec_name = gst_pb_utils_get_codec_description (caps);
+    context->alignment = 32;
   } else if (!strcmp (codec_id, GST_MATROSKA_CODEC_ID_VIDEO_MPEG4_SP)) {
     caps = gst_caps_new_simple ("video/x-divx",
         "divxversion", G_TYPE_INT, 4, NULL);

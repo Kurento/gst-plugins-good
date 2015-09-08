@@ -202,7 +202,7 @@ GST_START_TEST (test_simple_rtpbin_aux)
   RTXSendData send_rtxdata;
   send_rtxdata.count = 1;
   send_rtxdata.nb_packets = 0;
-  send_rtxdata.drop_every_n_packets = 50;
+  send_rtxdata.drop_every_n_packets = 25;
 
   GST_INFO ("preparing test");
 
@@ -238,7 +238,7 @@ GST_START_TEST (test_simple_rtpbin_aux)
   g_object_set (recvrtp_udpsrc, "port", 5006, NULL);
   rtpcaps =
       gst_caps_from_string
-      ("application/x-rtp,media=(string)audio,clock-rate=(int)8000,encoding-name=(string)PCMA,payload=(int)8");
+      ("application/x-rtp,media=(string)audio,clock-rate=(int)8000,encoding-name=(string)PCMA,payload=(int)96");
   g_object_set (recvrtp_udpsrc, "caps", rtpcaps, NULL);
   gst_caps_unref (rtpcaps);
   recvrtcp_udpsrc = gst_element_factory_make ("udpsrc", "recvrtcp_udpsrc");

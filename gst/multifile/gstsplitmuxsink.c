@@ -80,6 +80,14 @@ enum
 #define DEFAULT_MUXER "mp4mux"
 #define DEFAULT_SINK "filesink"
 
+enum
+{
+  SIGNAL_FORMAT_LOCATION,
+  SIGNAL_LAST
+};
+
+static guint signals[SIGNAL_LAST];
+
 static GstStaticPadTemplate video_sink_template =
 GST_STATIC_PAD_TEMPLATE ("video",
     GST_PAD_SINK,
@@ -202,6 +210,17 @@ gst_splitmux_sink_class_init (GstSplitMuxSinkClass * klass)
       g_param_spec_object ("sink", "Sink",
           "The sink element (or element chain) to use (NULL = default filesink)",
           GST_TYPE_ELEMENT, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstSplitMuxSink::format-location:
+   * @splitmux: the #GstSplitMuxSink
+   * @fragment_id: the sequence number of the file to be created
+   *
+   * Returns: the location to be used for the next output file
+   */
+  signals[SIGNAL_FORMAT_LOCATION] =
+      g_signal_new ("format-location", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL, G_TYPE_STRING, 1, G_TYPE_UINT);
 }
 
 static void
@@ -813,6 +832,7 @@ check_completed_gop (GstSplitMuxSink * splitmux, MqStreamCtx * ctx)
 {
   GList *cur;
   gboolean ready = TRUE;
+  GstClockTime current_max_in_running_time;
 
   if (splitmux->state == SPLITMUX_STATE_WAITING_GOP_COMPLETE) {
     /* Iterate each pad, and check that the input running time is at least
@@ -846,9 +866,11 @@ check_completed_gop (GstSplitMuxSink * splitmux, MqStreamCtx * ctx)
 
   /* Some pad is not yet ready, or GOP is being pushed
    * either way, sleep and wait to get woken */
+  current_max_in_running_time = splitmux->max_in_running_time;
   while ((splitmux->state == SPLITMUX_STATE_WAITING_GOP_COMPLETE ||
           splitmux->state == SPLITMUX_STATE_START_NEXT_FRAGMENT) &&
-      !ctx->flushing) {
+      !ctx->flushing &&
+      (current_max_in_running_time == splitmux->max_in_running_time)) {
 
     GST_LOG_OBJECT (splitmux, "Sleeping for %s (ctx %p)",
         splitmux->state == SPLITMUX_STATE_WAITING_GOP_COMPLETE ?
@@ -922,7 +944,7 @@ handle_mq_input (GstPad * pad, GstPadProbeInfo * info, MqStreamCtx * ctx)
   gboolean loop_again;
   gboolean keyframe = FALSE;
 
-  GST_LOG_OBJECT (pad, "Fired probe type 0x%x\n", info->type);
+  GST_LOG_OBJECT (pad, "Fired probe type 0x%x", info->type);
 
   /* FIXME: Handle buffer lists, until then make it clear they won't work */
   if (info->type & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
@@ -1138,6 +1160,12 @@ gst_splitmux_sink_request_new_pad (GstElement * element,
       mux_template =
           gst_element_class_get_pad_template (GST_ELEMENT_GET_CLASS
           (splitmux->muxer), templ->name_template);
+    }
+    if (mux_template == NULL) {
+      /* Fallback to find sink pad templates named 'sink_%d' (mpegtsmux) */
+      mux_template =
+          gst_element_class_get_pad_template (GST_ELEMENT_GET_CLASS
+          (splitmux->muxer), "sink_%d");
     }
   }
 
@@ -1416,10 +1444,16 @@ fail:
 static void
 set_next_filename (GstSplitMuxSink * splitmux)
 {
-  if (splitmux->location) {
-    gchar *fname;
+  gchar *fname = NULL;
 
-    fname = g_strdup_printf (splitmux->location, splitmux->fragment_id);
+  g_signal_emit (splitmux, signals[SIGNAL_FORMAT_LOCATION], 0,
+      splitmux->fragment_id, &fname);
+
+  if (!fname)
+    fname = splitmux->location ?
+        g_strdup_printf (splitmux->location, splitmux->fragment_id) : NULL;
+
+  if (fname) {
     GST_INFO_OBJECT (splitmux, "Setting file to %s", fname);
     g_object_set (splitmux->sink, "location", fname, NULL);
     g_free (fname);

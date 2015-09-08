@@ -139,6 +139,7 @@ gst_dca_parse_init (GstDcaParse * dcaparse)
       GST_BASE_PARSE_SINK_PAD (GST_BASE_PARSE (dcaparse))->chainfunc;
 
   GST_PAD_SET_ACCEPT_INTERSECT (GST_BASE_PARSE_SINK_PAD (dcaparse));
+  GST_PAD_SET_ACCEPT_TEMPLATE (GST_BASE_PARSE_SINK_PAD (dcaparse));
 }
 
 static void
@@ -320,7 +321,6 @@ gst_dca_parse_handle_frame (GstBaseParse * parse,
   GstDcaParse *dcaparse = GST_DCA_PARSE (parse);
   GstBuffer *buf = frame->buffer;
   GstByteReader r;
-  gboolean parser_draining;
   gboolean parser_in_sync;
   gboolean terminator;
   guint32 sync = 0;
@@ -378,6 +378,12 @@ gst_dca_parse_handle_frame (GstBaseParse * parse,
 
   dcaparse->last_sync = sync;
 
+  /* FIXME: Don't look for a second syncword, there are streams out there
+   * that consistently contain garbage between every frame so we never ever
+   * find a second consecutive syncword.
+   * See https://bugzilla.gnome.org/show_bug.cgi?id=738237
+   */
+#if 0
   parser_draining = GST_BASE_PARSE_DRAINING (parse);
 
   if (!parser_in_sync && !parser_draining) {
@@ -408,6 +414,7 @@ gst_dca_parse_handle_frame (GstBaseParse * parse,
       goto cleanup;
     }
   }
+#endif
 
   /* found frame */
   ret = GST_FLOW_OK;
@@ -566,8 +573,8 @@ gst_dca_parse_pre_push_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
         GST_TAG_AUDIO_CODEC, caps);
     gst_caps_unref (caps);
 
-    gst_pad_push_event (GST_BASE_PARSE_SRC_PAD (dcaparse),
-        gst_event_new_tag (taglist));
+    gst_base_parse_merge_tags (parse, taglist, GST_TAG_MERGE_REPLACE);
+    gst_tag_list_unref (taglist);
 
     /* also signals the end of first-frame processing */
     dcaparse->sent_codec_tag = TRUE;

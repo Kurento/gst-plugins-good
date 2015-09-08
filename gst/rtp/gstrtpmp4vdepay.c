@@ -22,9 +22,11 @@
 #endif
 
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 
 #include <string.h>
 #include "gstrtpmp4vdepay.h"
+#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpmp4vdepay_debug);
 #define GST_CAT_DEFAULT (rtpmp4vdepay_debug)
@@ -61,7 +63,7 @@ static void gst_rtp_mp4v_depay_finalize (GObject * object);
 static gboolean gst_rtp_mp4v_depay_setcaps (GstRTPBaseDepayload * depayload,
     GstCaps * caps);
 static GstBuffer *gst_rtp_mp4v_depay_process (GstRTPBaseDepayload * depayload,
-    GstBuffer * buf);
+    GstRTPBuffer * rtp);
 
 static GstStateChangeReturn gst_rtp_mp4v_depay_change_state (GstElement *
     element, GstStateChange transition);
@@ -81,7 +83,7 @@ gst_rtp_mp4v_depay_class_init (GstRtpMP4VDepayClass * klass)
 
   gstelement_class->change_state = gst_rtp_mp4v_depay_change_state;
 
-  gstrtpbasedepayload_class->process = gst_rtp_mp4v_depay_process;
+  gstrtpbasedepayload_class->process_rtp_packet = gst_rtp_mp4v_depay_process;
   gstrtpbasedepayload_class->set_caps = gst_rtp_mp4v_depay_setcaps;
 
   gst_element_class_add_pad_template (gstelement_class,
@@ -159,23 +161,20 @@ gst_rtp_mp4v_depay_setcaps (GstRTPBaseDepayload * depayload, GstCaps * caps)
 }
 
 static GstBuffer *
-gst_rtp_mp4v_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
+gst_rtp_mp4v_depay_process (GstRTPBaseDepayload * depayload, GstRTPBuffer * rtp)
 {
   GstRtpMP4VDepay *rtpmp4vdepay;
   GstBuffer *pbuf, *outbuf = NULL;
-  GstRTPBuffer rtp = { NULL };
   gboolean marker;
 
   rtpmp4vdepay = GST_RTP_MP4V_DEPAY (depayload);
 
   /* flush remaining data on discont */
-  if (GST_BUFFER_IS_DISCONT (buf))
+  if (GST_BUFFER_IS_DISCONT (rtp->buffer))
     gst_adapter_clear (rtpmp4vdepay->adapter);
 
-  gst_rtp_buffer_map (buf, GST_MAP_READ, &rtp);
-  pbuf = gst_rtp_buffer_get_payload_buffer (&rtp);
-  marker = gst_rtp_buffer_get_marker (&rtp);
-  gst_rtp_buffer_unmap (&rtp);
+  pbuf = gst_rtp_buffer_get_payload_buffer (rtp);
+  marker = gst_rtp_buffer_get_marker (rtp);
 
   gst_adapter_push (rtpmp4vdepay->adapter, pbuf);
 
@@ -188,7 +187,10 @@ gst_rtp_mp4v_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
 
     GST_DEBUG ("gst_rtp_mp4v_depay_chain: pushing buffer of size %"
         G_GSIZE_FORMAT, gst_buffer_get_size (outbuf));
+    gst_rtp_drop_meta (GST_ELEMENT_CAST (rtpmp4vdepay), outbuf,
+        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
   }
+
   return outbuf;
 }
 
