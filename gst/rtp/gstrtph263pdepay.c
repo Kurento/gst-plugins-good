@@ -24,9 +24,7 @@
 #include <string.h>
 
 #include <gst/rtp/gstrtpbuffer.h>
-#include <gst/video/video.h>
 #include "gstrtph263pdepay.h"
-#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtph263pdepay_debug);
 #define GST_CAT_DEFAULT (rtph263pdepay_debug)
@@ -333,9 +331,6 @@ gst_rtp_h263p_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
       outbuf = gst_buffer_append (outbuf, padbuf);
     }
     gst_rtp_buffer_unmap (&rtp);
-
-    gst_rtp_drop_meta (GST_ELEMENT_CAST (rtph263pdepay), outbuf,
-        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
 
     return outbuf;
 

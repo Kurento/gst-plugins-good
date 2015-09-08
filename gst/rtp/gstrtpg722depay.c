@@ -28,7 +28,6 @@
 
 #include "gstrtpg722depay.h"
 #include "gstrtpchannels.h"
-#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpg722depay_debug);
 #define GST_CAT_DEFAULT (rtpg722depay_debug)
@@ -241,11 +240,6 @@ gst_rtp_g722_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
   if (marker && outbuf) {
     /* mark talk spurt with RESYNC */
     GST_BUFFER_FLAG_SET (outbuf, GST_BUFFER_FLAG_RESYNC);
-  }
-
-  if (outbuf) {
-    gst_rtp_drop_meta (GST_ELEMENT_CAST (rtpg722depay), outbuf,
-        g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
   }
 
   return outbuf;

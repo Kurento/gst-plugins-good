@@ -44,12 +44,10 @@
 #endif
 
 #include <gst/rtp/gstrtpbuffer.h>
-#include <gst/audio/audio.h>
 
 #include <stdlib.h>
 #include <string.h>
 #include "gstrtpamrdepay.h"
-#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpamrdepay_debug);
 #define GST_CAT_DEFAULT (rtpamrdepay_debug)
@@ -432,10 +430,6 @@ gst_rtp_amr_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
   }
 
   gst_rtp_buffer_unmap (&rtp);
-
-  gst_rtp_copy_meta (GST_ELEMENT_CAST (rtpamrdepay), outbuf, buf,
-      g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
-
   return outbuf;
 
   /* ERRORS */

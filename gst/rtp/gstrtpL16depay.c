@@ -44,7 +44,6 @@
 
 #include "gstrtpL16depay.h"
 #include "gstrtpchannels.h"
-#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpL16depay_debug);
 #define GST_CAT_DEFAULT (rtpL16depay_debug)
@@ -261,11 +260,6 @@ gst_rtp_L16_depay_process (GstRTPBaseDepayload * depayload, GstBuffer * buf)
   }
 
   gst_rtp_buffer_unmap (&rtp);
-
-  if (outbuf) {
-    gst_rtp_drop_meta (GST_ELEMENT_CAST (rtpL16depay), outbuf,
-        g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
-  }
 
   return outbuf;
 

@@ -24,9 +24,7 @@
 
 #include <string.h>
 #include <gst/rtp/gstrtpbuffer.h>
-#include <gst/audio/audio.h>
 #include "gstrtpgsmdepay.h"
-#include "gstrtputils.h"
 
 GST_DEBUG_CATEGORY_STATIC (rtpgsmdepay_debug);
 #define GST_CAT_DEFAULT (rtpgsmdepay_debug)
@@ -140,11 +138,6 @@ gst_rtp_gsm_depay_process (GstRTPBaseDepayload * _depayload, GstBuffer * buf)
   if (marker && outbuf) {
     /* mark start of talkspurt with RESYNC */
     GST_BUFFER_FLAG_SET (outbuf, GST_BUFFER_FLAG_RESYNC);
-  }
-
-  if (outbuf) {
-    gst_rtp_drop_meta (GST_ELEMENT_CAST (_depayload), outbuf,
-        g_quark_from_static_string (GST_META_TAG_AUDIO_STR));
   }
 
   return outbuf;

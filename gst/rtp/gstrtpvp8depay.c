@@ -23,7 +23,6 @@
 #endif
 
 #include "gstrtpvp8depay.h"
-#include "gstrtputils.h"
 
 #include <gst/video/video.h>
 
@@ -186,9 +185,6 @@ gst_rtp_vp8_depay_process (GstRTPBaseDepayload * depay, GstBuffer * buf)
 
     /* mark keyframes */
     out = gst_buffer_make_writable (out);
-    /* Filter away all metas that are not sensible to copy */
-    gst_rtp_drop_meta (GST_ELEMENT_CAST (self), out,
-        g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
     if ((header[0] & 0x01)) {
       GST_BUFFER_FLAG_SET (out, GST_BUFFER_FLAG_DELTA_UNIT);
 
