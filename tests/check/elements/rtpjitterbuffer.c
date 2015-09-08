@@ -686,7 +686,7 @@ GST_START_TEST (test_only_one_lost_event_on_large_gaps)
           &id) == FALSE);
 
   /* a buffer now arrives perfectly on time */
-  in_buf = generate_test_buffer (5 * GST_SECOND, FALSE, 250, 250 * 160);
+  in_buf = generate_test_buffer (10 * GST_SECOND, FALSE, 500, 500 * 160);
   g_assert_cmpint (gst_pad_push (data.test_src_pad, in_buf), ==, GST_FLOW_OK);
 
   /* release the wait */
@@ -694,18 +694,18 @@ GST_START_TEST (test_only_one_lost_event_on_large_gaps)
   gst_test_clock_advance_time (GST_TEST_CLOCK (data.clock), GST_MSECOND * 20);
   test_id = gst_test_clock_process_next_clock_id (GST_TEST_CLOCK (data.clock));
 
-  /* move time ahead 5 seconds */
-  gst_test_clock_set_time (GST_TEST_CLOCK (data.clock), 5 * GST_SECOND);
+  /* move time ahead 10 seconds */
+  gst_test_clock_set_time (GST_TEST_CLOCK (data.clock), 10 * GST_SECOND);
 
   g_assert (id == test_id);
   gst_clock_id_unref (test_id);
   gst_clock_id_unref (id);
 
-  /* we should now receive a packet-lost-event for buffers 1 through 249 */
+  /* we should now receive a packet-lost-event for buffers 1 through 489 */
   out_event = g_async_queue_pop (data.sink_event_queue);
   g_assert (out_event != NULL);
   g_assert_cmpint (data.lost_event_count, ==, 1);
-  verify_lost_event (out_event, 1, 1 * GST_MSECOND * 20, GST_MSECOND * 20 * 240,
+  verify_lost_event (out_event, 1, 1 * GST_MSECOND * 20, GST_MSECOND * 20 * 490,
       TRUE);
 
   /* churn through sync_times until the new buffer gets pushed out */
@@ -726,10 +726,10 @@ GST_START_TEST (test_only_one_lost_event_on_large_gaps)
   g_assert (out_buf != NULL);
   g_assert (GST_BUFFER_FLAG_IS_SET (out_buf, GST_BUFFER_FLAG_DISCONT));
   gst_rtp_buffer_map (out_buf, GST_MAP_READ, &rtp);
-  g_assert_cmpint (gst_rtp_buffer_get_seq (&rtp), ==, 250);
+  g_assert_cmpint (gst_rtp_buffer_get_seq (&rtp), ==, 500);
   gst_rtp_buffer_unmap (&rtp);
-  g_assert_cmpint (GST_BUFFER_DTS (out_buf), ==, (5 * GST_SECOND));
-  g_assert_cmpint (GST_BUFFER_PTS (out_buf), ==, (5 * GST_SECOND));
+  g_assert_cmpint (GST_BUFFER_DTS (out_buf), ==, (10 * GST_SECOND));
+  g_assert_cmpint (GST_BUFFER_PTS (out_buf), ==, (10 * GST_SECOND));
   gst_buffer_unref (out_buf);
 
   /* we get as many lost events as the the number of buffers the jitterbuffer

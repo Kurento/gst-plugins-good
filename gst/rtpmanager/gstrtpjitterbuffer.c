@@ -325,7 +325,6 @@ struct _GstRtpJitterBufferPrivate
   guint64 num_rtx_failed;
   gdouble avg_rtx_num;
   guint64 avg_rtx_rtt;
-  RTPPacketRateCtx packet_rate_ctx;
 
   /* for the jitter */
   GstClockTime last_dts;
@@ -2060,12 +2059,13 @@ update_timers (GstRtpJitterBuffer * jitterbuffer, guint16 seqnum,
     delay = get_rtx_delay (priv);
 
     /* and update/install timer for next seqnum */
-    if (timer)
+    if (timer) {
       reschedule_timer (jitterbuffer, timer, priv->next_in_seqnum, expected,
           delay, TRUE);
-    else
+    } else {
       add_timer (jitterbuffer, TIMER_TYPE_EXPECTED, priv->next_in_seqnum, 0,
           expected, delay, priv->packet_spacing);
+    }
   } else if (timer && timer->type != TIMER_TYPE_DEADLINE) {
     /* if we had a timer, remove it, we don't know when to expect the next
      * packet. */
@@ -2273,8 +2273,7 @@ compare_buffer_seqnum (GstBuffer * a, GstBuffer * b, gpointer user_data)
 
 static gboolean
 handle_big_gap_buffer (GstRtpJitterBuffer * jitterbuffer, gboolean future,
-    GstBuffer * buffer, guint8 pt, guint16 seqnum, gint gap, guint max_dropout,
-    guint max_misorder)
+    GstBuffer * buffer, guint8 pt, guint16 seqnum, gint gap)
 {
   GstRtpJitterBufferPrivate *priv;
   guint gap_packets_length;
@@ -2316,7 +2315,7 @@ handle_big_gap_buffer (GstRtpJitterBuffer * jitterbuffer, gboolean future,
       GST_DEBUG_OBJECT (jitterbuffer,
           "buffer too %s %d < %d, got 5 consecutive ones - reset",
           (future ? "new" : "old"), gap,
-          (future ? max_dropout : -max_misorder));
+          (future ? RTP_MAX_DROPOUT : -RTP_MAX_MISORDER));
       reset = TRUE;
     } else if (!all_consecutive) {
       g_queue_foreach (&priv->gap_packets, (GFunc) gst_buffer_unref, NULL);
@@ -2324,19 +2323,20 @@ handle_big_gap_buffer (GstRtpJitterBuffer * jitterbuffer, gboolean future,
       GST_DEBUG_OBJECT (jitterbuffer,
           "buffer too %s %d < %d, got no 5 consecutive ones - dropping",
           (future ? "new" : "old"), gap,
-          (future ? max_dropout : -max_misorder));
+          (future ? RTP_MAX_DROPOUT : -RTP_MAX_MISORDER));
       buffer = NULL;
     } else {
       GST_DEBUG_OBJECT (jitterbuffer,
           "buffer too %s %d < %d, got %u consecutive ones - waiting",
           (future ? "new" : "old"), gap,
-          (future ? max_dropout : -max_misorder), gap_packets_length + 1);
+          (future ? RTP_MAX_DROPOUT : -RTP_MAX_MISORDER),
+          gap_packets_length + 1);
       buffer = NULL;
     }
   } else {
     GST_DEBUG_OBJECT (jitterbuffer,
         "buffer too %s %d < %d, first one - waiting", (future ? "new" : "old"),
-        gap, -max_misorder);
+        gap, -RTP_MAX_MISORDER);
     g_queue_push_tail (&priv->gap_packets, buffer);
     buffer = NULL;
   }
@@ -2362,7 +2362,6 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
   gboolean do_next_seqnum = FALSE;
   RTPJitterBufferItem *item;
   GstMessage *msg = NULL;
-  guint32 packet_rate, max_dropout, max_misorder;
 
   jitterbuffer = GST_RTP_JITTER_BUFFER_CAST (parent);
 
@@ -2453,18 +2452,6 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
 
   expected = priv->next_in_seqnum;
 
-  packet_rate =
-      gst_rtp_packet_rate_ctx_update (&priv->packet_rate_ctx, seqnum, rtptime);
-  max_dropout =
-      gst_rtp_packet_rate_ctx_get_max_dropout (&priv->packet_rate_ctx,
-      priv->max_dropout_time);
-  max_misorder =
-      gst_rtp_packet_rate_ctx_get_max_misorder (&priv->packet_rate_ctx,
-      priv->max_misorder_time);
-  GST_TRACE_OBJECT (jitterbuffer,
-      "packet_rate: %d, max_dropout: %d, max_misorder: %d", packet_rate,
-      max_dropout, max_misorder);
-
   /* now check against our expected seqnum */
   if (G_LIKELY (expected != -1)) {
     gint gap;
@@ -2489,17 +2476,17 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
         goto gap_but_no_dts;
       } else if (gap < 0) {
         /* we received an old packet */
-        if (G_UNLIKELY (gap != -1 && gap < -max_misorder)) {
+        if (G_UNLIKELY (gap != -1 && gap < -RTP_MAX_MISORDER)) {
           reset =
               handle_big_gap_buffer (jitterbuffer, FALSE, buffer, pt, seqnum,
-              gap, max_dropout, max_misorder);
+              gap);
           buffer = NULL;
         } else {
           GST_DEBUG_OBJECT (jitterbuffer, "old packet received");
         }
       } else {
         /* new packet, we are missing some packets */
-        if (G_UNLIKELY (priv->timers->len >= max_dropout)) {
+        if (G_UNLIKELY (priv->timers->len >= RTP_MAX_DROPOUT)) {
           /* If we have timers for more than RTP_MAX_DROPOUT packets
            * pending this means that we have a huge gap overall. We can
            * reset the jitterbuffer at this point because there's
@@ -2508,14 +2495,14 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
            * next packet */
           GST_WARNING_OBJECT (jitterbuffer,
               "%d pending timers > %d - resetting", priv->timers->len,
-              max_dropout);
+              RTP_MAX_DROPOUT);
           reset = TRUE;
           gst_buffer_unref (buffer);
           buffer = NULL;
-        } else if (G_UNLIKELY (gap >= max_dropout)) {
+        } else if (G_UNLIKELY (gap >= RTP_MAX_DROPOUT)) {
           reset =
               handle_big_gap_buffer (jitterbuffer, TRUE, buffer, pt, seqnum,
-              gap, max_dropout, max_misorder);
+              gap);
           buffer = NULL;
         } else {
           GST_DEBUG_OBJECT (jitterbuffer, "%d missing packets", gap);
@@ -3323,11 +3310,10 @@ wait_next_timeout (GstRtpJitterBuffer * jitterbuffer)
     GstClockTime timer_timeout = -1;
     gint i, len;
 
-    /* If we have a clock, update "now" now with the very
-     * latest running time we have. If timers are unscheduled below we
-     * otherwise wouldn't update now (it's only updated when timers
-     * expire), and also for the very first loop iteration now would
-     * otherwise always be 0
+    /* If we have a clock, update "now" now with the very latest running time
+     * we have. It is used below when timeouts are triggered to calculate
+     * any next possible timeout. If we only update it after waiting for the
+     * clock, we would give a too old time to the timeout functions.
      */
     GST_OBJECT_LOCK (jitterbuffer);
     if (GST_ELEMENT_CLOCK (jitterbuffer)) {
@@ -3430,7 +3416,6 @@ wait_next_timeout (GstRtpJitterBuffer * jitterbuffer)
       }
 
       if (ret != GST_CLOCK_UNSCHEDULED) {
-        now = timer_timeout + MAX (clock_jitter, 0);
         GST_DEBUG_OBJECT (jitterbuffer, "sync done, %d, #%d, %" G_GINT64_FORMAT,
             ret, priv->timer_seqnum, clock_jitter);
       } else {
