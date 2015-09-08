@@ -219,8 +219,6 @@ struct _RTPSession {
   GstStructure *sdes;
 
   guint         probation;
-  guint32       max_dropout_time;
-  guint32       max_misorder_time;
 
   GstRTPProfile rtp_profile;
 
