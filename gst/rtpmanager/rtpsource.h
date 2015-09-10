@@ -175,6 +175,7 @@ struct _RTPSource {
   guint64       bytes_received;
 
   GQueue       *packets;
+  RTPPacketRateCtx packet_rate_ctx;
   guint32       max_dropout_time;
   guint32       max_misorder_time;
 
