@@ -1,5 +1,6 @@
 /* GStreamer
  * Copyright (C) <2007> Wim Taymans <wim.taymans@gmail.com>
+ * Copyright (C)  2015 Kurento (http://kurento.org/)
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -40,6 +41,8 @@ enum
 #define DEFAULT_IS_SENDER            FALSE
 #define DEFAULT_SDES                 NULL
 #define DEFAULT_PROBATION            RTP_DEFAULT_PROBATION
+#define DEFAULT_MAX_DROPOUT_TIME     60000
+#define DEFAULT_MAX_MISORDER_TIME    2000
 
 enum
 {
@@ -50,7 +53,9 @@ enum
   PROP_IS_SENDER,
   PROP_SDES,
   PROP_STATS,
-  PROP_PROBATION
+  PROP_PROBATION,
+  PROP_MAX_DROPOUT_TIME,
+  PROP_MAX_MISORDER_TIME
 };
 
 /* GObject vmethods */
@@ -219,6 +224,18 @@ rtp_source_class_init (RTPSourceClass * klass)
           0, G_MAXUINT, DEFAULT_PROBATION,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
+      g_param_spec_uint ("max-dropout-time", "Max dropout time",
+          "The maximum time (milliseconds) of missing packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
+      g_param_spec_uint ("max-misorder-time", "Max misorder time",
+          "The maximum time (milliseconds) of misordered packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   GST_DEBUG_CATEGORY_INIT (rtp_source_debug, "rtpsource", 0, "RTP Source");
 }
 
@@ -265,6 +282,8 @@ rtp_source_init (RTPSource * src)
   src->probation = DEFAULT_PROBATION;
   src->curr_probation = src->probation;
   src->closing = FALSE;
+  src->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
+  src->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   src->sdes = gst_structure_new_empty ("application/x-rtp-source-sdes");
 
@@ -505,6 +524,12 @@ rtp_source_set_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       src->probation = g_value_get_uint (value);
       break;
+    case PROP_MAX_DROPOUT_TIME:
+      src->max_dropout_time = g_value_get_uint (value);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      src->max_misorder_time = g_value_get_uint (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -540,6 +565,12 @@ rtp_source_get_property (GObject * object, guint prop_id,
       break;
     case PROP_PROBATION:
       g_value_set_uint (value, src->probation);
+      break;
+    case PROP_MAX_DROPOUT_TIME:
+      g_value_set_uint (value, src->max_dropout_time);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      g_value_set_uint (value, src->max_misorder_time);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
