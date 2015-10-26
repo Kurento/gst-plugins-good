@@ -5,7 +5,6 @@
  *  Copyright 2007 Nokia Corporation
  *   @author: Philippe Kalaf <philippe.kalaf@collabora.co.uk>.
  *  Copyright 2007 Wim Taymans <wim.taymans@gmail.com>
- *  Copyright 2015 Kurento (http://kurento.org/)
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -137,8 +136,6 @@ enum
 #define DEFAULT_RTX_MIN_RETRY_TIMEOUT   -1
 #define DEFAULT_RTX_RETRY_PERIOD    -1
 #define DEFAULT_RTX_MAX_RETRIES    -1
-#define DEFAULT_MAX_DROPOUT_TIME    60000
-#define DEFAULT_MAX_MISORDER_TIME   2000
 
 #define DEFAULT_AUTO_RTX_DELAY (20 * GST_MSECOND)
 #define DEFAULT_AUTO_RTX_TIMEOUT (40 * GST_MSECOND)
@@ -161,8 +158,6 @@ enum
   PROP_RTX_MIN_RETRY_TIMEOUT,
   PROP_RTX_RETRY_PERIOD,
   PROP_RTX_MAX_RETRIES,
-  PROP_MAX_DROPOUT_TIME,
-  PROP_MAX_MISORDER_TIME,
   PROP_STATS
 };
 
@@ -260,8 +255,6 @@ struct _GstRtpJitterBufferPrivate
   gint rtx_min_retry_timeout;
   gint rtx_retry_period;
   gint rtx_max_retries;
-  guint32 max_dropout_time;
-  guint32 max_misorder_time;
 
   /* the last seqnum we pushed out */
   guint32 last_popped_seqnum;
@@ -668,18 +661,6 @@ gst_rtp_jitter_buffer_class_init (GstRtpJitterBufferClass * klass)
           "The maximum number of retries to request a retransmission. "
           "(-1 not limited)", -1, G_MAXINT, DEFAULT_RTX_MAX_RETRIES,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
-      g_param_spec_uint ("max-dropout-time", "Max dropout time",
-          "The maximum time (milliseconds) of missing packets tolerated.",
-          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
-      g_param_spec_uint ("max-misorder-time", "Max misorder time",
-          "The maximum time (milliseconds) of misordered packets tolerated.",
-          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   /**
    * GstRtpJitterBuffer:stats:
    *
@@ -841,8 +822,6 @@ gst_rtp_jitter_buffer_init (GstRtpJitterBuffer * jitterbuffer)
   priv->rtx_min_retry_timeout = DEFAULT_RTX_MIN_RETRY_TIMEOUT;
   priv->rtx_retry_period = DEFAULT_RTX_RETRY_PERIOD;
   priv->rtx_max_retries = DEFAULT_RTX_MAX_RETRIES;
-  priv->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
-  priv->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   priv->last_dts = -1;
   priv->last_rtptime = -1;
@@ -3950,16 +3929,6 @@ gst_rtp_jitter_buffer_set_property (GObject * object,
       priv->rtx_max_retries = g_value_get_int (value);
       JBUF_UNLOCK (priv);
       break;
-    case PROP_MAX_DROPOUT_TIME:
-      JBUF_LOCK (priv);
-      priv->max_dropout_time = g_value_get_uint (value);
-      JBUF_UNLOCK (priv);
-      break;
-    case PROP_MAX_MISORDER_TIME:
-      JBUF_LOCK (priv);
-      priv->max_misorder_time = g_value_get_uint (value);
-      JBUF_UNLOCK (priv);
-      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -4059,16 +4028,6 @@ gst_rtp_jitter_buffer_get_property (GObject * object,
     case PROP_RTX_MAX_RETRIES:
       JBUF_LOCK (priv);
       g_value_set_int (value, priv->rtx_max_retries);
-      JBUF_UNLOCK (priv);
-      break;
-    case PROP_MAX_DROPOUT_TIME:
-      JBUF_LOCK (priv);
-      g_value_set_uint (value, priv->max_dropout_time);
-      JBUF_UNLOCK (priv);
-      break;
-    case PROP_MAX_MISORDER_TIME:
-      JBUF_LOCK (priv);
-      g_value_set_uint (value, priv->max_misorder_time);
       JBUF_UNLOCK (priv);
       break;
     case PROP_STATS:

@@ -1,6 +1,5 @@
 /* GStreamer
  * Copyright (C) <2007> Wim Taymans <wim.taymans@gmail.com>
- * Copyright (C)  2015 Kurento (http://kurento.org/)
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -69,8 +68,6 @@ enum
 #define DEFAULT_RTCP_FEEDBACK_RETENTION_WINDOW (2 * GST_SECOND)
 #define DEFAULT_RTCP_IMMEDIATE_FEEDBACK_THRESHOLD (3)
 #define DEFAULT_PROBATION            RTP_DEFAULT_PROBATION
-#define DEFAULT_MAX_DROPOUT_TIME     60000
-#define DEFAULT_MAX_MISORDER_TIME    2000
 #define DEFAULT_RTP_PROFILE          GST_RTP_PROFILE_AVP
 
 enum
@@ -92,8 +89,6 @@ enum
   PROP_RTCP_FEEDBACK_RETENTION_WINDOW,
   PROP_RTCP_IMMEDIATE_FEEDBACK_THRESHOLD,
   PROP_PROBATION,
-  PROP_MAX_DROPOUT_TIME,
-  PROP_MAX_MISORDER_TIME,
   PROP_STATS,
   PROP_RTP_PROFILE
 };
@@ -487,18 +482,6 @@ rtp_session_class_init (RTPSessionClass * klass)
           0, G_MAXUINT, DEFAULT_PROBATION,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
-      g_param_spec_uint ("max-dropout-time", "Max dropout time",
-          "The maximum time (milliseconds) of missing packets tolerated.",
-          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
-  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
-      g_param_spec_uint ("max-misorder-time", "Max misorder time",
-          "The maximum time (milliseconds) of misordered packets tolerated.",
-          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-
   /**
    * RTPSession::stats:
    *
@@ -566,8 +549,6 @@ rtp_session_init (RTPSession * sess)
   sess->mtu = DEFAULT_RTCP_MTU;
 
   sess->probation = DEFAULT_PROBATION;
-  sess->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
-  sess->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   /* some default SDES entries */
   sess->sdes = gst_structure_new_empty ("application/x-rtp-source-sdes");
@@ -741,12 +722,6 @@ rtp_session_set_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       sess->probation = g_value_get_uint (value);
       break;
-    case PROP_MAX_DROPOUT_TIME:
-      sess->max_dropout_time = g_value_get_uint (value);
-      break;
-    case PROP_MAX_MISORDER_TIME:
-      sess->max_misorder_time = g_value_get_uint (value);
-      break;
     case PROP_RTP_PROFILE:
       sess->rtp_profile = g_value_get_enum (value);
       /* trigger reconsideration */
@@ -816,12 +791,6 @@ rtp_session_get_property (GObject * object, guint prop_id,
       break;
     case PROP_PROBATION:
       g_value_set_uint (value, sess->probation);
-      break;
-    case PROP_MAX_DROPOUT_TIME:
-      g_value_set_uint (value, sess->max_dropout_time);
-      break;
-    case PROP_MAX_MISORDER_TIME:
-      g_value_set_uint (value, sess->max_misorder_time);
       break;
     case PROP_STATS:
       g_value_take_boxed (value, rtp_session_create_stats (sess));
@@ -1595,9 +1564,10 @@ obtain_source (RTPSession * sess, guint32 ssrc, gboolean * created,
     /* for RTP packets we need to set the source in probation. Receiving RTCP
      * packets of an SSRC, on the other hand, is a strong indication that we
      * are dealing with a valid source. */
-    g_object_set (source, "probation", rtp ? sess->probation : 0,
-        "max-dropout-time", sess->max_dropout_time, "max-misorder-time",
-        sess->max_misorder_time, NULL);
+    if (rtp)
+      g_object_set (source, "probation", sess->probation, NULL);
+    else
+      g_object_set (source, "probation", 0, NULL);
 
     /* store from address, if any */
     if (pinfo->address) {
