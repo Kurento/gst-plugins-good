@@ -5,6 +5,8 @@
  *  Copyright 2007 Nokia Corporation
  *   @author: Philippe Kalaf <philippe.kalaf@collabora.co.uk>.
  *  Copyright 2007 Wim Taymans <wim.taymans@gmail.com>
+ *  Copyright 2015 Kurento (http://kurento.org/)
+ *   @author: Miguel París <mparisdiaz@gmail.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -136,6 +138,9 @@ enum
 #define DEFAULT_RTX_MIN_RETRY_TIMEOUT   -1
 #define DEFAULT_RTX_RETRY_PERIOD    -1
 #define DEFAULT_RTX_MAX_RETRIES    -1
+#define DEFAULT_MAX_RTCP_RTP_TIME_DIFF 1000
+#define DEFAULT_MAX_DROPOUT_TIME    60000
+#define DEFAULT_MAX_MISORDER_TIME   2000
 
 #define DEFAULT_AUTO_RTX_DELAY (20 * GST_MSECOND)
 #define DEFAULT_AUTO_RTX_TIMEOUT (40 * GST_MSECOND)
@@ -158,7 +163,10 @@ enum
   PROP_RTX_MIN_RETRY_TIMEOUT,
   PROP_RTX_RETRY_PERIOD,
   PROP_RTX_MAX_RETRIES,
-  PROP_STATS
+  PROP_STATS,
+  PROP_MAX_RTCP_RTP_TIME_DIFF,
+  PROP_MAX_DROPOUT_TIME,
+  PROP_MAX_MISORDER_TIME
 };
 
 #define JBUF_LOCK(priv)   (g_mutex_lock (&(priv)->jbuf_lock))
@@ -255,6 +263,9 @@ struct _GstRtpJitterBufferPrivate
   gint rtx_min_retry_timeout;
   gint rtx_retry_period;
   gint rtx_max_retries;
+  gint max_rtcp_rtp_time_diff;
+  guint32 max_dropout_time;
+  guint32 max_misorder_time;
 
   /* the last seqnum we pushed out */
   guint32 last_popped_seqnum;
@@ -318,6 +329,7 @@ struct _GstRtpJitterBufferPrivate
   guint64 num_rtx_failed;
   gdouble avg_rtx_num;
   guint64 avg_rtx_rtt;
+  RTPPacketRateCtx packet_rate_ctx;
 
   /* for the jitter */
   GstClockTime last_dts;
@@ -661,6 +673,18 @@ gst_rtp_jitter_buffer_class_init (GstRtpJitterBufferClass * klass)
           "The maximum number of retries to request a retransmission. "
           "(-1 not limited)", -1, G_MAXINT, DEFAULT_RTX_MAX_RETRIES,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
+      g_param_spec_uint ("max-dropout-time", "Max dropout time",
+          "The maximum time (milliseconds) of missing packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
+      g_param_spec_uint ("max-misorder-time", "Max misorder time",
+          "The maximum time (milliseconds) of misordered packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   /**
    * GstRtpJitterBuffer:stats:
    *
@@ -704,6 +728,22 @@ gst_rtp_jitter_buffer_class_init (GstRtpJitterBufferClass * klass)
       g_param_spec_boxed ("stats", "Statistics",
           "Various statistics", GST_TYPE_STRUCTURE,
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstRtpJitterBuffer:max-rtcp-rtp-time-diff
+   *
+   * The maximum amount of time in ms that the RTP time in the RTCP SRs
+   * is allowed to be ahead of the last RTP packet we received. Use
+   * -1 to disable ignoring of RTCP packets.
+   *
+   * Since: 1.8
+   */
+  g_object_class_install_property (gobject_class, PROP_MAX_RTCP_RTP_TIME_DIFF,
+      g_param_spec_int ("max-rtcp-rtp-time-diff", "Max RTCP RTP Time Diff",
+          "Maximum amount of time in ms that the RTP time in RTCP SRs "
+          "is allowed to be ahead (-1 disabled)", -1, G_MAXINT,
+          DEFAULT_MAX_RTCP_RTP_TIME_DIFF,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   /**
    * GstRtpJitterBuffer::request-pt-map:
@@ -822,6 +862,9 @@ gst_rtp_jitter_buffer_init (GstRtpJitterBuffer * jitterbuffer)
   priv->rtx_min_retry_timeout = DEFAULT_RTX_MIN_RETRY_TIMEOUT;
   priv->rtx_retry_period = DEFAULT_RTX_RETRY_PERIOD;
   priv->rtx_max_retries = DEFAULT_RTX_MAX_RETRIES;
+  priv->max_rtcp_rtp_time_diff = DEFAULT_MAX_RTCP_RTP_TIME_DIFF;
+  priv->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
+  priv->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   priv->last_dts = -1;
   priv->last_rtptime = -1;
@@ -2264,7 +2307,8 @@ compare_buffer_seqnum (GstBuffer * a, GstBuffer * b, gpointer user_data)
 
 static gboolean
 handle_big_gap_buffer (GstRtpJitterBuffer * jitterbuffer, gboolean future,
-    GstBuffer * buffer, guint8 pt, guint16 seqnum, gint gap)
+    GstBuffer * buffer, guint8 pt, guint16 seqnum, gint gap, guint max_dropout,
+    guint max_misorder)
 {
   GstRtpJitterBufferPrivate *priv;
   guint gap_packets_length;
@@ -2306,7 +2350,7 @@ handle_big_gap_buffer (GstRtpJitterBuffer * jitterbuffer, gboolean future,
       GST_DEBUG_OBJECT (jitterbuffer,
           "buffer too %s %d < %d, got 5 consecutive ones - reset",
           (future ? "new" : "old"), gap,
-          (future ? RTP_MAX_DROPOUT : -RTP_MAX_MISORDER));
+          (future ? max_dropout : -max_misorder));
       reset = TRUE;
     } else if (!all_consecutive) {
       g_queue_foreach (&priv->gap_packets, (GFunc) gst_buffer_unref, NULL);
@@ -2314,20 +2358,19 @@ handle_big_gap_buffer (GstRtpJitterBuffer * jitterbuffer, gboolean future,
       GST_DEBUG_OBJECT (jitterbuffer,
           "buffer too %s %d < %d, got no 5 consecutive ones - dropping",
           (future ? "new" : "old"), gap,
-          (future ? RTP_MAX_DROPOUT : -RTP_MAX_MISORDER));
+          (future ? max_dropout : -max_misorder));
       buffer = NULL;
     } else {
       GST_DEBUG_OBJECT (jitterbuffer,
           "buffer too %s %d < %d, got %u consecutive ones - waiting",
           (future ? "new" : "old"), gap,
-          (future ? RTP_MAX_DROPOUT : -RTP_MAX_MISORDER),
-          gap_packets_length + 1);
+          (future ? max_dropout : -max_misorder), gap_packets_length + 1);
       buffer = NULL;
     }
   } else {
     GST_DEBUG_OBJECT (jitterbuffer,
         "buffer too %s %d < %d, first one - waiting", (future ? "new" : "old"),
-        gap, -RTP_MAX_MISORDER);
+        gap, -max_misorder);
     g_queue_push_tail (&priv->gap_packets, buffer);
     buffer = NULL;
   }
@@ -2376,6 +2419,7 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
   RTPJitterBufferItem *item;
   GstMessage *msg = NULL;
   gboolean estimated_dts = FALSE;
+  guint32 packet_rate, max_dropout, max_misorder;
 
   jitterbuffer = GST_RTP_JITTER_BUFFER_CAST (parent);
 
@@ -2480,6 +2524,18 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
 
   expected = priv->next_in_seqnum;
 
+  packet_rate =
+      gst_rtp_packet_rate_ctx_update (&priv->packet_rate_ctx, seqnum, rtptime);
+  max_dropout =
+      gst_rtp_packet_rate_ctx_get_max_dropout (&priv->packet_rate_ctx,
+      priv->max_dropout_time);
+  max_misorder =
+      gst_rtp_packet_rate_ctx_get_max_misorder (&priv->packet_rate_ctx,
+      priv->max_misorder_time);
+  GST_TRACE_OBJECT (jitterbuffer,
+      "packet_rate: %d, max_dropout: %d, max_misorder: %d", packet_rate,
+      max_dropout, max_misorder);
+
   /* now check against our expected seqnum */
   if (G_LIKELY (expected != -1)) {
     gint gap;
@@ -2499,17 +2555,17 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
 
       if (gap < 0) {
         /* we received an old packet */
-        if (G_UNLIKELY (gap != -1 && gap < -RTP_MAX_MISORDER)) {
+        if (G_UNLIKELY (gap != -1 && gap < -max_misorder)) {
           reset =
               handle_big_gap_buffer (jitterbuffer, FALSE, buffer, pt, seqnum,
-              gap);
+              gap, max_dropout, max_misorder);
           buffer = NULL;
         } else {
           GST_DEBUG_OBJECT (jitterbuffer, "old packet received");
         }
       } else {
         /* new packet, we are missing some packets */
-        if (G_UNLIKELY (priv->timers->len >= RTP_MAX_DROPOUT)) {
+        if (G_UNLIKELY (priv->timers->len >= max_dropout)) {
           /* If we have timers for more than RTP_MAX_DROPOUT packets
            * pending this means that we have a huge gap overall. We can
            * reset the jitterbuffer at this point because there's
@@ -2518,14 +2574,14 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
            * next packet */
           GST_WARNING_OBJECT (jitterbuffer,
               "%d pending timers > %d - resetting", priv->timers->len,
-              RTP_MAX_DROPOUT);
+              max_dropout);
           reset = TRUE;
           gst_buffer_unref (buffer);
           buffer = NULL;
-        } else if (G_UNLIKELY (gap >= RTP_MAX_DROPOUT)) {
+        } else if (G_UNLIKELY (gap >= max_dropout)) {
           reset =
               handle_big_gap_buffer (jitterbuffer, TRUE, buffer, pt, seqnum,
-              gap);
+              gap, max_dropout, max_misorder);
           buffer = NULL;
         } else {
           GST_DEBUG_OBJECT (jitterbuffer, "%d missing packets", gap);
@@ -2891,9 +2947,11 @@ pop_and_push_next (GstRtpJitterBuffer * jitterbuffer, guint seqnum)
       }
 
       dts =
-          gst_segment_to_position (&priv->segment, GST_FORMAT_TIME, item->dts);
+          gst_segment_position_from_running_time (&priv->segment,
+          GST_FORMAT_TIME, item->dts);
       pts =
-          gst_segment_to_position (&priv->segment, GST_FORMAT_TIME, item->pts);
+          gst_segment_position_from_running_time (&priv->segment,
+          GST_FORMAT_TIME, item->pts);
 
       /* apply timestamp with offset to buffer now */
       GST_BUFFER_DTS (outbuf) = apply_offset (jitterbuffer, dts);
@@ -3330,10 +3388,11 @@ wait_next_timeout (GstRtpJitterBuffer * jitterbuffer)
     GstClockTime timer_timeout = -1;
     gint i, len;
 
-    /* If we have a clock, update "now" now with the very latest running time
-     * we have. It is used below when timeouts are triggered to calculate
-     * any next possible timeout. If we only update it after waiting for the
-     * clock, we would give a too old time to the timeout functions.
+    /* If we have a clock, update "now" now with the very
+     * latest running time we have. If timers are unscheduled below we
+     * otherwise wouldn't update now (it's only updated when timers
+     * expire), and also for the very first loop iteration now would
+     * otherwise always be 0
      */
     GST_OBJECT_LOCK (jitterbuffer);
     if (GST_ELEMENT_CLOCK (jitterbuffer)) {
@@ -3436,6 +3495,7 @@ wait_next_timeout (GstRtpJitterBuffer * jitterbuffer)
       }
 
       if (ret != GST_CLOCK_UNSCHEDULED) {
+        now = timer_timeout + MAX (clock_jitter, 0);
         GST_DEBUG_OBJECT (jitterbuffer, "sync done, %d, #%d, %" G_GINT64_FORMAT,
             ret, priv->timer_seqnum, clock_jitter);
       } else {
@@ -3552,7 +3612,10 @@ do_handle_sync (GstRtpJitterBuffer * jitterbuffer)
         /* check how far ahead it is to our RTP timestamps */
         diff = ext_rtptime - last_rtptime;
         /* if bigger than 1 second, we drop it */
-        if (diff > clock_rate) {
+        if (jitterbuffer->priv->max_rtcp_rtp_time_diff != -1 &&
+            diff >
+            gst_util_uint64_scale (jitterbuffer->priv->max_rtcp_rtp_time_diff,
+                clock_rate, 1000)) {
           GST_DEBUG_OBJECT (jitterbuffer, "too far ahead");
           /* should drop this, but some RTSP servers end up with bogus
            * way too ahead RTCP packet when repeated PAUSE/PLAY,
@@ -3929,6 +3992,21 @@ gst_rtp_jitter_buffer_set_property (GObject * object,
       priv->rtx_max_retries = g_value_get_int (value);
       JBUF_UNLOCK (priv);
       break;
+    case PROP_MAX_RTCP_RTP_TIME_DIFF:
+      JBUF_LOCK (priv);
+      priv->max_rtcp_rtp_time_diff = g_value_get_int (value);
+      JBUF_UNLOCK (priv);
+      break;
+    case PROP_MAX_DROPOUT_TIME:
+      JBUF_LOCK (priv);
+      priv->max_dropout_time = g_value_get_uint (value);
+      JBUF_UNLOCK (priv);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      JBUF_LOCK (priv);
+      priv->max_misorder_time = g_value_get_uint (value);
+      JBUF_UNLOCK (priv);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -4033,6 +4111,21 @@ gst_rtp_jitter_buffer_get_property (GObject * object,
     case PROP_STATS:
       g_value_take_boxed (value,
           gst_rtp_jitter_buffer_create_stats (jitterbuffer));
+      break;
+    case PROP_MAX_RTCP_RTP_TIME_DIFF:
+      JBUF_LOCK (priv);
+      g_value_set_int (value, priv->max_rtcp_rtp_time_diff);
+      JBUF_UNLOCK (priv);
+      break;
+    case PROP_MAX_DROPOUT_TIME:
+      JBUF_LOCK (priv);
+      g_value_set_uint (value, priv->max_dropout_time);
+      JBUF_UNLOCK (priv);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      JBUF_LOCK (priv);
+      g_value_set_uint (value, priv->max_misorder_time);
+      JBUF_UNLOCK (priv);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

@@ -43,8 +43,6 @@
 #include "gstsouphttpclientsink.h"
 #include "gstsouputils.h"
 
-#include <gst/glib-compat-private.h>
-
 GST_DEBUG_CATEGORY_STATIC (souphttpclientsink_dbg);
 #define GST_CAT_DEFAULT souphttpclientsink_dbg
 
@@ -72,7 +70,6 @@ static GstFlowReturn gst_soup_http_client_sink_preroll (GstBaseSink * sink,
 static GstFlowReturn gst_soup_http_client_sink_render (GstBaseSink * sink,
     GstBuffer * buffer);
 
-static void free_buffer_list (GList * list);
 static void gst_soup_http_client_sink_reset (GstSoupHttpClientSink *
     souphttpsink);
 static void authenticate (SoupSession * session, SoupMessage * msg,
@@ -95,7 +92,9 @@ enum
   PROP_PROXY_PW,
   PROP_COOKIES,
   PROP_SESSION,
-  PROP_SOUP_LOG_LEVEL
+  PROP_SOUP_LOG_LEVEL,
+  PROP_RETRY_DELAY,
+  PROP_RETRIES
 };
 
 #define DEFAULT_USER_AGENT           "GStreamer souphttpclientsink "
@@ -171,6 +170,14 @@ gst_soup_http_client_sink_class_init (GstSoupHttpClientSinkClass * klass)
   g_object_class_install_property (gobject_class, PROP_COOKIES,
       g_param_spec_boxed ("cookies", "Cookies", "HTTP request cookies",
           G_TYPE_STRV, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_RETRY_DELAY,
+      g_param_spec_int ("retry-delay", "Retry Delay",
+          "Delay in seconds between retries after a failure", 1, G_MAXINT, 5,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_RETRIES,
+      g_param_spec_int ("retries", "Retries",
+          "Maximum number of retries, zero to disable, -1 to retry forever",
+          -1, G_MAXINT, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
  /**
    * GstSoupHttpClientSink::http-log-level:
    *
@@ -231,6 +238,8 @@ gst_soup_http_client_sink_init (GstSoupHttpClientSink * souphttpsink)
   souphttpsink->prop_session = NULL;
   souphttpsink->timeout = 1;
   souphttpsink->log_level = DEFAULT_SOUP_LOG_LEVEL;
+  souphttpsink->retry_delay = 5;
+  souphttpsink->retries = 0;
   proxy = g_getenv ("http_proxy");
   if (proxy && !gst_soup_http_client_sink_set_proxy (souphttpsink, proxy)) {
     GST_WARNING_OBJECT (souphttpsink,
@@ -251,7 +260,12 @@ gst_soup_http_client_sink_reset (GstSoupHttpClientSink * souphttpsink)
   souphttpsink->reason_phrase = NULL;
   souphttpsink->status_code = 0;
   souphttpsink->offset = 0;
+  souphttpsink->failures = 0;
 
+  g_list_free_full (souphttpsink->streamheader_buffers,
+      (GDestroyNotify) gst_buffer_unref);
+  g_list_free_full (souphttpsink->sent_buffers,
+      (GDestroyNotify) gst_buffer_unref);
 }
 
 static gboolean
@@ -292,6 +306,14 @@ gst_soup_http_client_sink_set_property (GObject * object, guint property_id,
       g_free (souphttpsink->location);
       souphttpsink->location = g_value_dup_string (value);
       souphttpsink->offset = 0;
+      if ((souphttpsink->location == NULL)
+          || !gst_uri_is_valid (souphttpsink->location)) {
+        GST_WARNING_OBJECT (souphttpsink,
+            "The location (\"%s\") set, is not a valid uri.",
+            souphttpsink->location);
+        g_free (souphttpsink->location);
+        souphttpsink->location = NULL;
+      }
       break;
     case PROP_USER_AGENT:
       g_free (souphttpsink->user_agent);
@@ -338,6 +360,12 @@ gst_soup_http_client_sink_set_property (GObject * object, guint property_id,
       break;
     case PROP_SOUP_LOG_LEVEL:
       souphttpsink->log_level = g_value_get_enum (value);
+      break;
+    case PROP_RETRY_DELAY:
+      souphttpsink->retry_delay = g_value_get_int (value);
+      break;
+    case PROP_RETRIES:
+      souphttpsink->retries = g_value_get_int (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
@@ -393,6 +421,12 @@ gst_soup_http_client_sink_get_property (GObject * object, guint property_id,
       break;
     case PROP_SOUP_LOG_LEVEL:
       g_value_set_enum (value, souphttpsink->log_level);
+      break;
+    case PROP_RETRY_DELAY:
+      g_value_set_int (value, souphttpsink->retry_delay);
+      break;
+    case PROP_RETRIES:
+      g_value_set_int (value, souphttpsink->retries);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
@@ -450,7 +484,8 @@ gst_soup_http_client_sink_set_caps (GstBaseSink * sink, GstCaps * caps)
   structure = gst_caps_get_structure (caps, 0);
   value_array = gst_structure_get_value (structure, "streamheader");
   if (value_array) {
-    free_buffer_list (souphttpsink->streamheader_buffers);
+    g_list_free_full (souphttpsink->streamheader_buffers,
+        (GDestroyNotify) gst_buffer_unref);
     souphttpsink->streamheader_buffers = NULL;
 
     n = gst_value_array_get_size (value_array);
@@ -573,8 +608,19 @@ gst_soup_http_client_sink_stop (GstBaseSink * sink)
     g_object_unref (souphttpsink->session);
   }
 
+  g_mutex_lock (&souphttpsink->mutex);
+  if (souphttpsink->timer) {
+    g_source_destroy (souphttpsink->timer);
+    g_source_unref (souphttpsink->timer);
+    souphttpsink->timer = NULL;
+  }
+  g_mutex_unlock (&souphttpsink->mutex);
+
   if (souphttpsink->loop) {
     g_main_loop_quit (souphttpsink->loop);
+    g_mutex_lock (&souphttpsink->mutex);
+    g_cond_signal (&souphttpsink->cond);
+    g_mutex_unlock (&souphttpsink->mutex);
     g_thread_join (souphttpsink->thread);
     g_main_loop_unref (souphttpsink->loop);
     souphttpsink->loop = NULL;
@@ -627,17 +673,6 @@ gst_soup_http_client_sink_preroll (GstBaseSink * sink, GstBuffer * buffer)
 }
 
 static void
-free_buffer_list (GList * list)
-{
-  GList *g;
-  for (g = list; g; g = g_list_next (g)) {
-    GstBuffer *buffer = g->data;
-    gst_buffer_unref (buffer);
-  }
-  g_list_free (list);
-}
-
-static void
 send_message_locked (GstSoupHttpClientSink * souphttpsink)
 {
   GList *g;
@@ -650,12 +685,22 @@ send_message_locked (GstSoupHttpClientSink * souphttpsink)
   /* If the URI went away, drop all these buffers */
   if (souphttpsink->location == NULL) {
     GST_DEBUG_OBJECT (souphttpsink, "URI went away, dropping queued buffers");
-    free_buffer_list (souphttpsink->queued_buffers);
+    g_list_free_full (souphttpsink->queued_buffers,
+        (GDestroyNotify) gst_buffer_unref);
     souphttpsink->queued_buffers = NULL;
     return;
   }
 
   souphttpsink->message = soup_message_new ("PUT", souphttpsink->location);
+  if (souphttpsink->message == NULL) {
+    GST_WARNING_OBJECT (souphttpsink,
+        "URI could not be parsed while creating message.");
+    g_list_free_full (souphttpsink->queued_buffers,
+        (GDestroyNotify) gst_buffer_unref);
+    souphttpsink->queued_buffers = NULL;
+    return;
+  }
+
   soup_message_set_flags (souphttpsink->message,
       (souphttpsink->automatic_redirect ? 0 : SOUP_MESSAGE_NO_REDIRECT));
 
@@ -715,7 +760,8 @@ send_message_locked (GstSoupHttpClientSink * souphttpsink)
   if (n == 0) {
     GST_DEBUG_OBJECT (souphttpsink,
         "total size of buffers queued is 0, freeing everything");
-    free_buffer_list (souphttpsink->queued_buffers);
+    g_list_free_full (souphttpsink->queued_buffers,
+        (GDestroyNotify) gst_buffer_unref);
     souphttpsink->queued_buffers = NULL;
     g_object_unref (souphttpsink->message);
     souphttpsink->message = NULL;
@@ -739,6 +785,11 @@ send_message (GstSoupHttpClientSink * souphttpsink)
 {
   g_mutex_lock (&souphttpsink->mutex);
   send_message_locked (souphttpsink);
+  if (souphttpsink->timer) {
+    g_source_destroy (souphttpsink->timer);
+    g_source_unref (souphttpsink->timer);
+    souphttpsink->timer = NULL;
+  }
   g_mutex_unlock (&souphttpsink->mutex);
 
   return FALSE;
@@ -757,14 +808,48 @@ callback (SoupSession * session, SoupMessage * msg, gpointer user_data)
   souphttpsink->message = NULL;
 
   if (!SOUP_STATUS_IS_SUCCESSFUL (msg->status_code)) {
-    souphttpsink->status_code = msg->status_code;
-    souphttpsink->reason_phrase = g_strdup (msg->reason_phrase);
+    souphttpsink->failures++;
+    if (souphttpsink->retries &&
+        (souphttpsink->retries < 0 ||
+            souphttpsink->retries >= souphttpsink->failures)) {
+      guint64 retry_delay;
+      const char *retry_after =
+          soup_message_headers_get_one (msg->response_headers,
+          "Retry-After");
+      if (retry_after) {
+        gchar *end = NULL;
+        retry_delay = g_ascii_strtoull (retry_after, &end, 10);
+        if (end || errno) {
+          retry_delay = souphttpsink->retry_delay;
+        } else {
+          retry_delay = MAX (retry_delay, souphttpsink->retry_delay);
+        }
+        GST_WARNING_OBJECT (souphttpsink, "Could not write to HTTP URI: "
+            "status: %d %s (retrying PUT after %" G_GINT64_FORMAT
+            " seconds with Retry-After: %s)", msg->status_code,
+            msg->reason_phrase, retry_delay, retry_after);
+      } else {
+        retry_delay = souphttpsink->retry_delay;
+        GST_WARNING_OBJECT (souphttpsink, "Could not write to HTTP URI: "
+            "status: %d %s (retrying PUT after %" G_GINT64_FORMAT
+            " seconds)", msg->status_code, msg->reason_phrase, retry_delay);
+      }
+      souphttpsink->timer = g_timeout_source_new_seconds (retry_delay);
+      g_source_set_callback (souphttpsink->timer, (GSourceFunc) (send_message),
+          souphttpsink, NULL);
+      g_source_attach (souphttpsink->timer, souphttpsink->context);
+    } else {
+      souphttpsink->status_code = msg->status_code;
+      souphttpsink->reason_phrase = g_strdup (msg->reason_phrase);
+    }
     g_mutex_unlock (&souphttpsink->mutex);
     return;
   }
 
-  free_buffer_list (souphttpsink->sent_buffers);
+  g_list_free_full (souphttpsink->sent_buffers,
+      (GDestroyNotify) gst_buffer_unref);
   souphttpsink->sent_buffers = NULL;
+  souphttpsink->failures = 0;
 
   send_message_locked (souphttpsink);
   g_mutex_unlock (&souphttpsink->mutex);
@@ -778,10 +863,9 @@ gst_soup_http_client_sink_render (GstBaseSink * sink, GstBuffer * buffer)
   gboolean wake;
 
   if (souphttpsink->status_code != 0) {
-    /* FIXME we should allow a moderate amount of retries. */
     GST_ELEMENT_ERROR (souphttpsink, RESOURCE, WRITE,
         ("Could not write to HTTP URI"),
-        ("error: %d %s", souphttpsink->status_code,
+        ("status: %d %s", souphttpsink->status_code,
             souphttpsink->reason_phrase));
     return GST_FLOW_ERROR;
   }

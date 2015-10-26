@@ -694,6 +694,7 @@ gst_qt_mux_prepare_tx3g_buffer (GstQTPad * qtpad, GstBuffer * buf,
   GstMapInfo frommap;
   GstMapInfo tomap;
   gsize size;
+  const guint8 *dataend;
 
   GST_LOG_OBJECT (qtmux, "Preparing tx3g buffer %" GST_PTR_FORMAT, buf);
 
@@ -702,7 +703,8 @@ gst_qt_mux_prepare_tx3g_buffer (GstQTPad * qtpad, GstBuffer * buf,
 
   gst_buffer_map (buf, &frommap, GST_MAP_READ);
 
-  size = (gint16) strnlen ((const char *) frommap.data, frommap.size);
+  dataend = memchr (frommap.data, 0, frommap.size);
+  size = dataend ? dataend - frommap.data : frommap.size;
   newbuf = gst_buffer_new_and_alloc (size + 2);
 
   gst_buffer_map (newbuf, &tomap, GST_MAP_WRITE);
@@ -1004,6 +1006,7 @@ gst_qt_mux_add_3gp_date (GstQTMux * qtmux, const GstTagList * list,
     return;
 
   year = g_date_get_year (date);
+  g_date_free (date);
 
   if (year == G_DATE_BAD_YEAR) {
     GST_WARNING_OBJECT (qtmux, "invalid date in tag");
@@ -1414,6 +1417,7 @@ gst_qt_mux_add_metadata_tags (GstQTMux * qtmux, const GstTagList * list,
         }
         gst_buffer_unmap (buf, &map);
       }
+      gst_sample_unref (sample);
     }
   }
 
@@ -3553,6 +3557,8 @@ gst_qt_mux_audio_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
         entry.fourcc = FOURCC_sowt;
       else if (info.finfo->endianness == G_BIG_ENDIAN)
         entry.fourcc = FOURCC_twos;
+      else
+        entry.fourcc = FOURCC_sowt;
       /* maximum backward compatibility; only new version for > 16 bit */
       if (info.finfo->depth <= 16)
         entry.version = 0;
@@ -4022,6 +4028,18 @@ gst_qt_mux_video_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
 
     gst_structure_get_uint (structure, "format", &fourcc);
     entry.fourcc = fourcc;
+  } else if (strcmp (mimetype, "video/x-prores") == 0) {
+    const gchar *variant;
+
+    variant = gst_structure_get_string (structure, "format");
+    if (!variant || !g_strcmp0 (variant, "standard"))
+      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', 'c', 'n');
+    else if (!g_strcmp0 (variant, "lt"))
+      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', 'c', 's');
+    else if (!g_strcmp0 (variant, "hq"))
+      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', 'c', 'h');
+    else if (!g_strcmp0 (variant, "proxy"))
+      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', '4', 'h');
   }
 
   if (!entry.fourcc)

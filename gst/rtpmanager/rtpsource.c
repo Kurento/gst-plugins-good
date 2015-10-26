@@ -1,5 +1,7 @@
 /* GStreamer
  * Copyright (C) <2007> Wim Taymans <wim.taymans@gmail.com>
+ * Copyright (C)  2015 Kurento (http://kurento.org/)
+ *   @author: Miguel París <mparisdiaz@gmail.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -40,6 +42,8 @@ enum
 #define DEFAULT_IS_SENDER            FALSE
 #define DEFAULT_SDES                 NULL
 #define DEFAULT_PROBATION            RTP_DEFAULT_PROBATION
+#define DEFAULT_MAX_DROPOUT_TIME     60000
+#define DEFAULT_MAX_MISORDER_TIME    2000
 
 enum
 {
@@ -50,7 +54,9 @@ enum
   PROP_IS_SENDER,
   PROP_SDES,
   PROP_STATS,
-  PROP_PROBATION
+  PROP_PROBATION,
+  PROP_MAX_DROPOUT_TIME,
+  PROP_MAX_MISORDER_TIME
 };
 
 /* GObject vmethods */
@@ -219,6 +225,18 @@ rtp_source_class_init (RTPSourceClass * klass)
           0, G_MAXUINT, DEFAULT_PROBATION,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
+      g_param_spec_uint ("max-dropout-time", "Max dropout time",
+          "The maximum time (milliseconds) of missing packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
+      g_param_spec_uint ("max-misorder-time", "Max misorder time",
+          "The maximum time (milliseconds) of misordered packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   GST_DEBUG_CATEGORY_INIT (rtp_source_debug, "rtpsource", 0, "RTP Source");
 }
 
@@ -265,6 +283,8 @@ rtp_source_init (RTPSource * src)
   src->probation = DEFAULT_PROBATION;
   src->curr_probation = src->probation;
   src->closing = FALSE;
+  src->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
+  src->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   src->sdes = gst_structure_new_empty ("application/x-rtp-source-sdes");
 
@@ -505,6 +525,12 @@ rtp_source_set_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       src->probation = g_value_get_uint (value);
       break;
+    case PROP_MAX_DROPOUT_TIME:
+      src->max_dropout_time = g_value_get_uint (value);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      src->max_misorder_time = g_value_get_uint (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -540,6 +566,12 @@ rtp_source_get_property (GObject * object, guint prop_id,
       break;
     case PROP_PROBATION:
       g_value_set_uint (value, src->probation);
+      break;
+    case PROP_MAX_DROPOUT_TIME:
+      g_value_set_uint (value, src->max_dropout_time);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      g_value_set_uint (value, src->max_misorder_time);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -878,6 +910,7 @@ get_clock_rate (RTPSource * src, guint8 payload)
     GST_DEBUG ("got clock-rate %d", clock_rate);
 
     src->clock_rate = clock_rate;
+    gst_rtp_packet_rate_ctx_reset (&src->packet_rate_ctx, clock_rate);
   }
   return src->clock_rate;
 }
@@ -1005,15 +1038,29 @@ do_bitrate_estimation (RTPSource * src, GstClockTime running_time,
 }
 
 static gboolean
-update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
+update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo,
+    gboolean is_receive)
 {
   guint16 seqnr, expected;
   RTPSourceStats *stats;
   gint16 delta;
+  gint32 packet_rate, max_dropout, max_misorder;
 
   stats = &src->stats;
 
   seqnr = pinfo->seqnum;
+
+  packet_rate =
+      gst_rtp_packet_rate_ctx_update (&src->packet_rate_ctx, pinfo->seqnum,
+      pinfo->rtptime);
+  max_dropout =
+      gst_rtp_packet_rate_ctx_get_max_dropout (&src->packet_rate_ctx,
+      src->max_dropout_time);
+  max_misorder =
+      gst_rtp_packet_rate_ctx_get_max_misorder (&src->packet_rate_ctx,
+      src->max_misorder_time);
+  GST_TRACE ("SSRC %08x, packet_rate: %d, max_dropout: %d, max_misorder: %d",
+      src->ssrc, packet_rate, max_dropout, max_misorder);
 
   if (stats->cycles == -1) {
     GST_DEBUG ("received first packet");
@@ -1023,80 +1070,82 @@ update_receiver_stats (RTPSource * src, RTPPacketInfo * pinfo)
     src->curr_probation = src->probation;
   }
 
-  expected = src->stats.max_seq + 1;
-  delta = gst_rtp_buffer_compare_seqnum (expected, seqnr);
+  if (is_receive) {
+    expected = src->stats.max_seq + 1;
+    delta = gst_rtp_buffer_compare_seqnum (expected, seqnr);
 
-  /* if we are still on probation, check seqnum */
-  if (src->curr_probation) {
-    /* when in probation, we require consecutive seqnums */
-    if (delta == 0) {
-      /* expected packet */
-      GST_DEBUG ("probation: seqnr %d == expected %d", seqnr, expected);
-      src->curr_probation--;
+    /* if we are still on probation, check seqnum */
+    if (src->curr_probation) {
+      /* when in probation, we require consecutive seqnums */
+      if (delta == 0) {
+        /* expected packet */
+        GST_DEBUG ("probation: seqnr %d == expected %d", seqnr, expected);
+        src->curr_probation--;
+        if (seqnr < stats->max_seq) {
+          /* sequence number wrapped - count another 64K cycle. */
+          stats->cycles += RTP_SEQ_MOD;
+        }
+        src->stats.max_seq = seqnr;
+
+        if (src->curr_probation == 0) {
+          GST_DEBUG ("probation done!");
+          init_seq (src, seqnr);
+        } else {
+          GstBuffer *q;
+
+          GST_DEBUG ("probation %d: queue packet", src->curr_probation);
+          /* when still in probation, keep packets in a list. */
+          g_queue_push_tail (src->packets, pinfo->data);
+          pinfo->data = NULL;
+          /* remove packets from queue if there are too many */
+          while (g_queue_get_length (src->packets) > RTP_MAX_PROBATION_LEN) {
+            q = g_queue_pop_head (src->packets);
+            gst_buffer_unref (q);
+          }
+          goto done;
+        }
+      } else {
+        /* unexpected seqnum in probation */
+        goto probation_seqnum;
+      }
+    } else if (delta >= 0 && delta < max_dropout) {
+      /* Clear bad packets */
+      stats->bad_seq = RTP_SEQ_MOD + 1; /* so seq == bad_seq is false */
+      g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
+      g_queue_clear (src->packets);
+
+      /* in order, with permissible gap */
       if (seqnr < stats->max_seq) {
         /* sequence number wrapped - count another 64K cycle. */
         stats->cycles += RTP_SEQ_MOD;
       }
-      src->stats.max_seq = seqnr;
-
-      if (src->curr_probation == 0) {
-        GST_DEBUG ("probation done!");
+      stats->max_seq = seqnr;
+    } else if (delta < -max_misorder || delta >= max_dropout) {
+      /* the sequence number made a very large jump */
+      if (seqnr == stats->bad_seq && src->packets->head) {
+        /* two sequential packets -- assume that the other side
+         * restarted without telling us so just re-sync
+         * (i.e., pretend this was the first packet).  */
         init_seq (src, seqnr);
       } else {
-        GstBuffer *q;
-
-        GST_DEBUG ("probation %d: queue packet", src->curr_probation);
-        /* when still in probation, keep packets in a list. */
+        /* unacceptable jump */
+        stats->bad_seq = (seqnr + 1) & (RTP_SEQ_MOD - 1);
+        g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
+        g_queue_clear (src->packets);
         g_queue_push_tail (src->packets, pinfo->data);
         pinfo->data = NULL;
-        /* remove packets from queue if there are too many */
-        while (g_queue_get_length (src->packets) > RTP_MAX_PROBATION_LEN) {
-          q = g_queue_pop_head (src->packets);
-          gst_buffer_unref (q);
-        }
-        goto done;
+        goto bad_sequence;
       }
-    } else {
-      /* unexpected seqnum in probation */
-      goto probation_seqnum;
-    }
-  } else if (delta >= 0 && delta < RTP_MAX_DROPOUT) {
-    /* Clear bad packets */
-    stats->bad_seq = RTP_SEQ_MOD + 1;   /* so seq == bad_seq is false */
-    g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
-    g_queue_clear (src->packets);
-
-    /* in order, with permissible gap */
-    if (seqnr < stats->max_seq) {
-      /* sequence number wrapped - count another 64K cycle. */
-      stats->cycles += RTP_SEQ_MOD;
-    }
-    stats->max_seq = seqnr;
-  } else if (delta < -RTP_MAX_MISORDER || delta >= RTP_MAX_DROPOUT) {
-    /* the sequence number made a very large jump */
-    if (seqnr == stats->bad_seq && src->packets->head) {
-      /* two sequential packets -- assume that the other side
-       * restarted without telling us so just re-sync
-       * (i.e., pretend this was the first packet).  */
-      init_seq (src, seqnr);
-    } else {
-      /* unacceptable jump */
-      stats->bad_seq = (seqnr + 1) & (RTP_SEQ_MOD - 1);
+    } else {                    /* delta < 0 && delta >= -max_misorder */
+      /* Clear bad packets */
+      stats->bad_seq = RTP_SEQ_MOD + 1; /* so seq == bad_seq is false */
       g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
       g_queue_clear (src->packets);
-      g_queue_push_tail (src->packets, pinfo->data);
-      pinfo->data = NULL;
-      goto bad_sequence;
-    }
-  } else {                      /* delta < 0 && delta >= -RTP_MAX_MISORDER */
-    /* Clear bad packets */
-    stats->bad_seq = RTP_SEQ_MOD + 1;   /* so seq == bad_seq is false */
-    g_queue_foreach (src->packets, (GFunc) gst_buffer_unref, NULL);
-    g_queue_clear (src->packets);
 
-    /* duplicate or reordered packet, will be filtered by jitterbuffer. */
-    GST_WARNING ("duplicate or reordered packet (seqnr %u, expected %u)", seqnr,
-        expected);
+      /* duplicate or reordered packet, will be filtered by jitterbuffer. */
+      GST_WARNING ("duplicate or reordered packet (seqnr %u, expected %u)",
+          seqnr, expected);
+    }
   }
 
   src->stats.octets_received += pinfo->payload_len;
@@ -1117,7 +1166,9 @@ done:
   }
 bad_sequence:
   {
-    GST_WARNING ("unacceptable seqnum received");
+    GST_WARNING
+        ("unacceptable seqnum received (seqnr %u, delta %d, packet_rate: %d, max_dropout: %d, max_misorder: %d)",
+        seqnr, delta, packet_rate, max_dropout, max_misorder);
     return FALSE;
   }
 probation_seqnum:
@@ -1146,7 +1197,7 @@ rtp_source_process_rtp (RTPSource * src, RTPPacketInfo * pinfo)
   g_return_val_if_fail (RTP_IS_SOURCE (src), GST_FLOW_ERROR);
   g_return_val_if_fail (pinfo != NULL, GST_FLOW_ERROR);
 
-  if (!update_receiver_stats (src, pinfo))
+  if (!update_receiver_stats (src, pinfo, TRUE))
     return GST_FLOW_OK;
 
   /* the source that sent the packet must be a sender */
@@ -1217,7 +1268,7 @@ rtp_source_send_rtp (RTPSource * src, RTPPacketInfo * pinfo)
   src->is_sender = TRUE;
 
   /* we are also a receiver of our packets */
-  if (!update_receiver_stats (src, pinfo))
+  if (!update_receiver_stats (src, pinfo, FALSE))
     return GST_FLOW_OK;
 
   /* update stats for the SR */

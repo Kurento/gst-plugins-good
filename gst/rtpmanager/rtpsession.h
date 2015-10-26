@@ -219,8 +219,12 @@ struct _RTPSession {
   GstStructure *sdes;
 
   guint         probation;
+  guint32       max_dropout_time;
+  guint32       max_misorder_time;
 
   GstRTPProfile rtp_profile;
+
+  gboolean      reduced_size_rtcp;
 
   /* bandwidths */
   gboolean     recalc_bandwidth;
@@ -309,6 +313,8 @@ struct _RTPSessionClass {
       guint sender_ssrc, guint media_ssrc, GstBuffer *fci);
   gboolean (*send_rtcp)     (RTPSession *sess, GstClockTime max_delay);
   void (*on_receiving_rtcp) (RTPSession *sess, GstBuffer *buffer);
+  void (*on_new_sender_ssrc)     (RTPSession *sess, RTPSource *source);
+  void (*on_sender_ssrc_active)  (RTPSession *sess, RTPSource *source);
 };
 
 GType rtp_session_get_type (void);

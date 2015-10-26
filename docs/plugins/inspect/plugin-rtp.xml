@@ -3,7 +3,7 @@
   <description>Real-time protocol plugins</description>
   <filename>../../gst/rtp/.libs/libgstrtp.so</filename>
   <basename>libgstrtp.so</basename>
-  <version>1.5.91</version>
+  <version>1.6.0</version>
   <license>LGPL</license>
   <source>gst-plugins-good</source>
   <package>GStreamer Good Plug-ins source release</package>
@@ -1630,7 +1630,7 @@
       <name>rtpvp8pay</name>
       <longname>RTP VP8 payloader</longname>
       <class>Codec/Payloader/Network/RTP</class>
-      <description>Puts VP8 video in RTP packets)</description>
+      <description>Puts VP8 video in RTP packets</description>
       <author>Sjoerd Simons &lt;sjoerd@luon.net&gt;</author>
       <pads>
         <caps>

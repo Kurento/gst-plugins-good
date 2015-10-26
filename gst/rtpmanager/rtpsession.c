@@ -51,6 +51,8 @@ enum
   SIGNAL_SEND_RTCP,
   SIGNAL_SEND_RTCP_FULL,
   SIGNAL_ON_RECEIVING_RTCP,
+  SIGNAL_ON_NEW_SENDER_SSRC,
+  SIGNAL_ON_SENDER_SSRC_ACTIVE,
   LAST_SIGNAL
 };
 
@@ -68,7 +70,10 @@ enum
 #define DEFAULT_RTCP_FEEDBACK_RETENTION_WINDOW (2 * GST_SECOND)
 #define DEFAULT_RTCP_IMMEDIATE_FEEDBACK_THRESHOLD (3)
 #define DEFAULT_PROBATION            RTP_DEFAULT_PROBATION
+#define DEFAULT_MAX_DROPOUT_TIME     60000
+#define DEFAULT_MAX_MISORDER_TIME    2000
 #define DEFAULT_RTP_PROFILE          GST_RTP_PROFILE_AVP
+#define DEFAULT_RTCP_REDUCED_SIZE    FALSE
 
 enum
 {
@@ -89,8 +94,11 @@ enum
   PROP_RTCP_FEEDBACK_RETENTION_WINDOW,
   PROP_RTCP_IMMEDIATE_FEEDBACK_THRESHOLD,
   PROP_PROBATION,
+  PROP_MAX_DROPOUT_TIME,
+  PROP_MAX_MISORDER_TIME,
   PROP_STATS,
-  PROP_RTP_PROFILE
+  PROP_RTP_PROFILE,
+  PROP_RTCP_REDUCED_SIZE
 };
 
 /* update average packet size */
@@ -362,6 +370,36 @@ rtp_session_class_init (RTPSessionClass * klass)
       NULL, NULL, g_cclosure_marshal_generic, G_TYPE_NONE, 1,
       GST_TYPE_BUFFER | G_SIGNAL_TYPE_STATIC_SCOPE);
 
+  /**
+   * RTPSession::on-new-sender-ssrc:
+   * @session: the object which received the signal
+   * @src: the new sender RTPSource
+   *
+   * Notify of a new sender SSRC that entered @session.
+   *
+   * Since: 1.8
+   */
+  rtp_session_signals[SIGNAL_ON_NEW_SENDER_SSRC] =
+      g_signal_new ("on-new-sender-ssrc", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (RTPSessionClass, on_new_sender_ssrc),
+      NULL, NULL, g_cclosure_marshal_VOID__OBJECT, G_TYPE_NONE, 1,
+      RTP_TYPE_SOURCE);
+
+  /**
+   * RTPSession::on-sender-ssrc-active:
+   * @session: the object which received the signal
+   * @src: the active sender RTPSource
+   *
+   * Notify of a sender SSRC that is active, i.e., sending RTCP.
+   *
+   * Since: 1.8
+   */
+  rtp_session_signals[SIGNAL_ON_SENDER_SSRC_ACTIVE] =
+      g_signal_new ("on-sender-ssrc-active", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (RTPSessionClass,
+          on_sender_ssrc_active), NULL, NULL, g_cclosure_marshal_VOID__OBJECT,
+      G_TYPE_NONE, 1, RTP_TYPE_SOURCE);
+
   g_object_class_install_property (gobject_class, PROP_INTERNAL_SSRC,
       g_param_spec_uint ("internal-ssrc", "Internal SSRC",
           "The internal SSRC used for the session (deprecated)",
@@ -482,6 +520,18 @@ rtp_session_class_init (RTPSessionClass * klass)
           0, G_MAXUINT, DEFAULT_PROBATION,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
+      g_param_spec_uint ("max-dropout-time", "Max dropout time",
+          "The maximum time (milliseconds) of missing packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
+      g_param_spec_uint ("max-misorder-time", "Max misorder time",
+          "The maximum time (milliseconds) of misordered packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   /**
    * RTPSession::stats:
    *
@@ -492,6 +542,8 @@ rtp_session_class_init (RTPSessionClass * klass)
    *      dropped (due to bandwidth constraints)
    *  "sent-nack-count" G_TYPE_UINT   Number of NACKs sent
    *  "recv-nack-count" G_TYPE_UINT   Number of NACKs received
+   *  "source-stats"    G_TYPE_BOXED  GValueArray of #RTPSource::stats for all
+   *      RTP sources (Since 1.8)
    *
    * Since: 1.4
    */
@@ -504,6 +556,12 @@ rtp_session_class_init (RTPSessionClass * klass)
       g_param_spec_enum ("rtp-profile", "RTP Profile",
           "RTP profile to use for this session", GST_TYPE_RTP_PROFILE,
           DEFAULT_RTP_PROFILE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_RTCP_REDUCED_SIZE,
+      g_param_spec_boolean ("rtcp-reduced-size", "RTCP Reduced Size",
+          "Use Reduced Size RTCP for feedback packets",
+          DEFAULT_RTCP_REDUCED_SIZE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   klass->get_source_by_ssrc =
       GST_DEBUG_FUNCPTR (rtp_session_get_source_by_ssrc);
@@ -549,6 +607,8 @@ rtp_session_init (RTPSession * sess)
   sess->mtu = DEFAULT_RTCP_MTU;
 
   sess->probation = DEFAULT_PROBATION;
+  sess->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
+  sess->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   /* some default SDES entries */
   sess->sdes = gst_structure_new_empty ("application/x-rtp-source-sdes");
@@ -582,6 +642,7 @@ rtp_session_init (RTPSession * sess)
   sess->rtcp_immediate_feedback_threshold =
       DEFAULT_RTCP_IMMEDIATE_FEEDBACK_THRESHOLD;
   sess->rtp_profile = DEFAULT_RTP_PROFILE;
+  sess->reduced_size_rtcp = DEFAULT_RTCP_REDUCED_SIZE;
 
   sess->last_keyframe_request = GST_CLOCK_TIME_NONE;
 
@@ -642,15 +703,43 @@ rtp_session_create_sources (RTPSession * sess)
   return res;
 }
 
+static void
+create_source_stats (gpointer key, RTPSource * source, GValueArray *arr)
+{
+  GValue value = G_VALUE_INIT;
+  GstStructure *s;
+
+  g_object_get (source, "stats", &s, NULL);
+
+  g_value_init (&value, GST_TYPE_STRUCTURE);
+  gst_value_set_structure (&value, s);
+  g_value_array_append (arr, &value);
+  gst_structure_free (s);
+  g_value_unset (&value);
+}
+
 static GstStructure *
 rtp_session_create_stats (RTPSession * sess)
 {
   GstStructure *s;
+  GValueArray *source_stats;
+  GValue source_stats_v = G_VALUE_INIT;
+  guint size;
 
   s = gst_structure_new ("application/x-rtp-session-stats",
       "rtx-drop-count", G_TYPE_UINT, sess->stats.nacks_dropped,
       "sent-nack-count", G_TYPE_UINT, sess->stats.nacks_sent,
-      "recv-nack-count", G_TYPE_UINT, sess->stats.nacks_received, NULL);
+      "recv-nack-count", G_TYPE_UINT, sess->stats.nacks_received,
+      NULL);
+
+  size = g_hash_table_size (sess->ssrcs[sess->mask_idx]);
+  source_stats = g_value_array_new (size);
+  g_hash_table_foreach (sess->ssrcs[sess->mask_idx],
+      (GHFunc) create_source_stats, source_stats);
+
+  g_value_init (&source_stats_v, G_TYPE_VALUE_ARRAY);
+  g_value_take_boxed (&source_stats_v, source_stats);
+  gst_structure_take_value (s, "source-stats", &source_stats_v);
 
   return s;
 }
@@ -722,6 +811,12 @@ rtp_session_set_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       sess->probation = g_value_get_uint (value);
       break;
+    case PROP_MAX_DROPOUT_TIME:
+      sess->max_dropout_time = g_value_get_uint (value);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      sess->max_misorder_time = g_value_get_uint (value);
+      break;
     case PROP_RTP_PROFILE:
       sess->rtp_profile = g_value_get_enum (value);
       /* trigger reconsideration */
@@ -730,6 +825,9 @@ rtp_session_set_property (GObject * object, guint prop_id,
       RTP_SESSION_UNLOCK (sess);
       if (sess->callbacks.reconsider)
         sess->callbacks.reconsider (sess, sess->reconsider_user_data);
+      break;
+    case PROP_RTCP_REDUCED_SIZE:
+      sess->reduced_size_rtcp = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -792,11 +890,20 @@ rtp_session_get_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       g_value_set_uint (value, sess->probation);
       break;
+    case PROP_MAX_DROPOUT_TIME:
+      g_value_set_uint (value, sess->max_dropout_time);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      g_value_set_uint (value, sess->max_misorder_time);
+      break;
     case PROP_STATS:
       g_value_take_boxed (value, rtp_session_create_stats (sess));
       break;
     case PROP_RTP_PROFILE:
       g_value_set_enum (value, sess->rtp_profile);
+      break;
+    case PROP_RTCP_REDUCED_SIZE:
+      g_value_set_boolean (value, sess->reduced_size_rtcp);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -893,6 +1000,28 @@ on_sender_timeout (RTPSession * sess, RTPSource * source)
   g_object_ref (source);
   RTP_SESSION_UNLOCK (sess);
   g_signal_emit (sess, rtp_session_signals[SIGNAL_ON_SENDER_TIMEOUT], 0,
+      source);
+  RTP_SESSION_LOCK (sess);
+  g_object_unref (source);
+}
+
+static void
+on_new_sender_ssrc (RTPSession * sess, RTPSource * source)
+{
+  g_object_ref (source);
+  RTP_SESSION_UNLOCK (sess);
+  g_signal_emit (sess, rtp_session_signals[SIGNAL_ON_NEW_SENDER_SSRC], 0,
+      source);
+  RTP_SESSION_LOCK (sess);
+  g_object_unref (source);
+}
+
+static void
+on_sender_ssrc_active (RTPSession * sess, RTPSource * source)
+{
+  g_object_ref (source);
+  RTP_SESSION_UNLOCK (sess);
+  g_signal_emit (sess, rtp_session_signals[SIGNAL_ON_SENDER_SSRC_ACTIVE], 0,
       source);
   RTP_SESSION_LOCK (sess);
   g_object_unref (source);
@@ -1564,10 +1693,9 @@ obtain_source (RTPSession * sess, guint32 ssrc, gboolean * created,
     /* for RTP packets we need to set the source in probation. Receiving RTCP
      * packets of an SSRC, on the other hand, is a strong indication that we
      * are dealing with a valid source. */
-    if (rtp)
-      g_object_set (source, "probation", sess->probation, NULL);
-    else
-      g_object_set (source, "probation", 0, NULL);
+    g_object_set (source, "probation", rtp ? sess->probation : 0,
+        "max-dropout-time", sess->max_dropout_time, "max-misorder-time",
+        sess->max_misorder_time, NULL);
 
     /* store from address, if any */
     if (pinfo->address) {
@@ -2754,6 +2882,10 @@ rtp_session_update_send_caps (RTPSession * sess, GstCaps * caps)
     sess->internal_ssrc_from_caps_or_property = TRUE;
     if (source) {
       rtp_source_update_caps (source, caps);
+
+      if (created)
+        on_new_sender_ssrc (sess, source);
+
       g_object_unref (source);
     }
 
@@ -2806,6 +2938,8 @@ rtp_session_send_rtp (RTPSession * sess, gpointer data, gboolean is_list,
     goto invalid_packet;
 
   source = obtain_internal_source (sess, pinfo.ssrc, &created, current_time);
+  if (created)
+    on_new_sender_ssrc (sess, source);
 
   prevsender = RTP_SOURCE_IS_SENDER (source);
   oldrate = source->bitrate;
@@ -3118,6 +3252,9 @@ session_start_rtcp (RTPSession * sess, ReportData * data)
   data->has_sdes = FALSE;
 
   gst_rtcp_buffer_map (data->rtcp, GST_MAP_READWRITE, rtcp);
+
+  if (data->is_early && sess->reduced_size_rtcp)
+    return;
 
   if (RTP_SOURCE_IS_SENDER (own)) {
     guint64 ntptime;
@@ -3715,7 +3852,7 @@ generate_rtcp (const gchar * key, RTPSource * source, ReportData * data)
     g_hash_table_foreach (sess->ssrcs[sess->mask_idx],
         (GHFunc) session_report_blocks, data);
   }
-  if (!data->has_sdes)
+  if (!data->has_sdes && (!data->is_early || !sess->reduced_size_rtcp))
     session_sdes (sess, data);
 
   if (data->have_fir)
@@ -3817,6 +3954,10 @@ rtp_session_on_timeout (RTPSession * sess, GstClockTime current_time,
     source = obtain_internal_source (sess, sess->suggested_ssrc, &created,
         current_time);
     sess->internal_ssrc_set = TRUE;
+
+    if (created)
+      on_new_sender_ssrc (sess, source);
+
     g_object_unref (source);
   }
 
@@ -3841,6 +3982,9 @@ rtp_session_on_timeout (RTPSession * sess, GstClockTime current_time,
 
   /* update point-to-point status */
   session_update_ptp (sess);
+
+  /* notify about updated statistics */
+  g_object_notify (G_OBJECT (sess), "stats");
 
   /* see if we need to generate SR or RR packets */
   if (!is_rtcp_time (sess, current_time, &data))
@@ -3903,6 +4047,10 @@ done:
           sess->callbacks.send_rtcp (sess, source, buffer, output->is_bye,
           sess->send_rtcp_user_data);
       sess->stats.nacks_sent += data.nacked_seqnums;
+
+      RTP_SESSION_LOCK (sess);
+      on_sender_ssrc_active (sess, source);
+      RTP_SESSION_UNLOCK (sess);
     } else {
       GST_DEBUG ("freeing packet callback: %p"
           " do_not_suppress: %d may_suppress: %d", sess->callbacks.send_rtcp,

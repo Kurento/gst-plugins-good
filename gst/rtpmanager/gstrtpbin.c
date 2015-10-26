@@ -272,6 +272,9 @@ enum
   SIGNAL_REQUEST_AUX_SENDER,
   SIGNAL_REQUEST_AUX_RECEIVER,
 
+  SIGNAL_ON_NEW_SENDER_SSRC,
+  SIGNAL_ON_SENDER_SSRC_ACTIVE,
+
   LAST_SIGNAL
 };
 
@@ -290,6 +293,10 @@ enum
 #define DEFAULT_DO_RETRANSMISSION    FALSE
 #define DEFAULT_RTP_PROFILE          GST_RTP_PROFILE_AVP
 #define DEFAULT_NTP_TIME_SOURCE      GST_RTP_NTP_TIME_SOURCE_NTP
+#define DEFAULT_RTCP_SYNC_SEND_TIME  TRUE
+#define DEFAULT_MAX_RTCP_RTP_TIME_DIFF 1000
+#define DEFAULT_MAX_DROPOUT_TIME     60000
+#define DEFAULT_MAX_MISORDER_TIME    2000
 
 enum
 {
@@ -308,7 +315,11 @@ enum
   PROP_DO_SYNC_EVENT,
   PROP_DO_RETRANSMISSION,
   PROP_RTP_PROFILE,
-  PROP_NTP_TIME_SOURCE
+  PROP_NTP_TIME_SOURCE,
+  PROP_RTCP_SYNC_SEND_TIME,
+  PROP_MAX_RTCP_RTP_TIME_DIFF,
+  PROP_MAX_DROPOUT_TIME,
+  PROP_MAX_MISORDER_TIME
 };
 
 #define GST_RTP_BIN_RTCP_SYNC_TYPE (gst_rtp_bin_rtcp_sync_get_type())
@@ -561,6 +572,21 @@ on_npt_stop (GstElement * jbuf, GstRtpBinStream * stream)
       stream->session->id, stream->ssrc);
 }
 
+static void
+on_new_sender_ssrc (GstElement * session, guint32 ssrc, GstRtpBinSession * sess)
+{
+  g_signal_emit (sess->bin, gst_rtp_bin_signals[SIGNAL_ON_NEW_SENDER_SSRC], 0,
+      sess->id, ssrc);
+}
+
+static void
+on_sender_ssrc_active (GstElement * session, guint32 ssrc,
+    GstRtpBinSession * sess)
+{
+  g_signal_emit (sess->bin, gst_rtp_bin_signals[SIGNAL_ON_SENDER_SSRC_ACTIVE],
+      0, sess->id, ssrc);
+}
+
 /* must be called with the SESSION lock */
 static GstRtpBinStream *
 find_stream_by_ssrc (GstRtpBinSession * session, guint32 ssrc)
@@ -625,12 +651,16 @@ create_session (GstRtpBin * rtpbin, gint id)
   /* configure SDES items */
   GST_OBJECT_LOCK (rtpbin);
   g_object_set (session, "sdes", rtpbin->sdes, "rtp-profile",
-      rtpbin->rtp_profile, NULL);
+      rtpbin->rtp_profile, "rtcp-sync-send-time", rtpbin->rtcp_sync_send_time,
+      NULL);
   if (rtpbin->use_pipeline_clock)
     g_object_set (session, "use-pipeline-clock", rtpbin->use_pipeline_clock,
         NULL);
   else
     g_object_set (session, "ntp-time-source", rtpbin->ntp_time_source, NULL);
+
+  g_object_set (session, "max-dropout-time", rtpbin->max_dropout_time,
+      "max-misorder-time", rtpbin->max_misorder_time, NULL);
   GST_OBJECT_UNLOCK (rtpbin);
 
   /* provide clock_rate to the session manager when needed */
@@ -654,6 +684,10 @@ create_session (GstRtpBin * rtpbin, gint id)
   g_signal_connect (sess->session, "on-timeout", (GCallback) on_timeout, sess);
   g_signal_connect (sess->session, "on-sender-timeout",
       (GCallback) on_sender_timeout, sess);
+  g_signal_connect (sess->session, "on-new-sender-ssrc",
+      (GCallback) on_new_sender_ssrc, sess);
+  g_signal_connect (sess->session, "on-sender-ssrc-active",
+      (GCallback) on_sender_ssrc_active, sess);
 
   gst_bin_add (GST_BIN_CAST (rtpbin), session);
   gst_bin_add (GST_BIN_CAST (rtpbin), demux);
@@ -955,6 +989,21 @@ gst_rtp_bin_propagate_property_to_jitterbuffer (GstRtpBin * bin,
   GST_RTP_BIN_UNLOCK (bin);
 }
 
+static void
+gst_rtp_bin_propagate_property_to_session (GstRtpBin * bin,
+    const gchar * name, const GValue * value)
+{
+  GSList *sessions;
+
+  GST_RTP_BIN_LOCK (bin);
+  for (sessions = bin->sessions; sessions; sessions = g_slist_next (sessions)) {
+    GstRtpBinSession *sess = (GstRtpBinSession *) sessions->data;
+
+    g_object_set_property (G_OBJECT (sess->session), name, value);
+  }
+  GST_RTP_BIN_UNLOCK (bin);
+}
+
 /* get a client with the given SDES name. Must be called with RTP_BIN_LOCK */
 static GstRtpBinClient *
 get_client (GstRtpBin * bin, guint8 len, guint8 * data, gboolean * created)
@@ -1041,6 +1090,7 @@ get_current_times (GstRtpBin * bin, GstClockTime * running_time,
           ntpns = clock_time;
           break;
         default:
+          ntpns = -1;           /* Fix uninited compiler warning */
           g_assert_not_reached ();
           break;
       }
@@ -1549,6 +1599,10 @@ create_stream (GstRtpBinSession * session, guint32 ssrc)
   g_object_set (buffer, "do-lost", rtpbin->do_lost, NULL);
   g_object_set (buffer, "mode", rtpbin->buffer_mode, NULL);
   g_object_set (buffer, "do-retransmission", rtpbin->do_retransmission, NULL);
+  g_object_set (buffer, "max-rtcp-rtp-time-diff",
+      rtpbin->max_rtcp_rtp_time_diff, NULL);
+  g_object_set (buffer, "max-dropout-time", rtpbin->max_dropout_time,
+      "max-misorder-time", rtpbin->max_misorder_time, NULL);
 
   g_signal_emit (rtpbin, gst_rtp_bin_signals[SIGNAL_NEW_JITTERBUFFER], 0,
       buffer, session->id, ssrc);
@@ -2062,6 +2116,36 @@ gst_rtp_bin_class_init (GstRtpBinClass * klass)
       G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstRtpBinClass,
           request_aux_receiver), _gst_element_accumulator, NULL,
       g_cclosure_marshal_generic, GST_TYPE_ELEMENT, 1, G_TYPE_UINT);
+  /**
+   * GstRtpBin::on-new-sender-ssrc:
+   * @rtpbin: the object which received the signal
+   * @session: the session
+   * @ssrc: the sender SSRC
+   *
+   * Since: 1.8
+   *
+   * Notify of a new sender SSRC that entered @session.
+   */
+  gst_rtp_bin_signals[SIGNAL_ON_NEW_SENDER_SSRC] =
+      g_signal_new ("on-new-sender-ssrc", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstRtpBinClass, on_new_sender_ssrc),
+      NULL, NULL, g_cclosure_marshal_generic, G_TYPE_NONE, 2, G_TYPE_UINT,
+      G_TYPE_UINT);
+  /**
+   * GstRtpBin::on-ssrc-active:
+   * @rtpbin: the object which received the signal
+   * @session: the session
+   * @ssrc: the sender SSRC
+   *
+   * Since: 1.8
+   *
+   * Notify of a sender SSRC that is active, i.e., sending RTCP.
+   */
+  gst_rtp_bin_signals[SIGNAL_ON_SENDER_SSRC_ACTIVE] =
+      g_signal_new ("on-sender-ssrc-active", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstRtpBinClass,
+          on_sender_ssrc_active), NULL, NULL, g_cclosure_marshal_generic,
+      G_TYPE_NONE, 2, G_TYPE_UINT, G_TYPE_UINT);
 
   g_object_class_install_property (gobject_class, PROP_SDES,
       g_param_spec_boxed ("sdes", "SDES",
@@ -2171,6 +2255,32 @@ gst_rtp_bin_class_init (GstRtpBinClass * klass)
           gst_rtp_ntp_time_source_get_type (), DEFAULT_NTP_TIME_SOURCE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_RTCP_SYNC_SEND_TIME,
+      g_param_spec_boolean ("rtcp-sync-send-time", "RTCP Sync Send Time",
+          "Use send time or capture time for RTCP sync "
+          "(TRUE = send time, FALSE = capture time)",
+          DEFAULT_RTCP_SYNC_SEND_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_RTCP_RTP_TIME_DIFF,
+      g_param_spec_int ("max-rtcp-rtp-time-diff", "Max RTCP RTP Time Diff",
+          "Maximum amount of time in ms that the RTP time in RTCP SRs "
+          "is allowed to be ahead (-1 disabled)", -1, G_MAXINT,
+          DEFAULT_MAX_RTCP_RTP_TIME_DIFF,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
+      g_param_spec_uint ("max-dropout-time", "Max dropout time",
+          "The maximum time (milliseconds) of missing packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
+      g_param_spec_uint ("max-misorder-time", "Max misorder time",
+          "The maximum time (milliseconds) of misordered packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gstelement_class->change_state = GST_DEBUG_FUNCPTR (gst_rtp_bin_change_state);
   gstelement_class->request_new_pad =
       GST_DEBUG_FUNCPTR (gst_rtp_bin_request_new_pad);
@@ -2235,6 +2345,10 @@ gst_rtp_bin_init (GstRtpBin * rtpbin)
   rtpbin->do_retransmission = DEFAULT_DO_RETRANSMISSION;
   rtpbin->rtp_profile = DEFAULT_RTP_PROFILE;
   rtpbin->ntp_time_source = DEFAULT_NTP_TIME_SOURCE;
+  rtpbin->rtcp_sync_send_time = DEFAULT_RTCP_SYNC_SEND_TIME;
+  rtpbin->max_rtcp_rtp_time_diff = DEFAULT_MAX_RTCP_RTP_TIME_DIFF;
+  rtpbin->max_dropout_time = DEFAULT_MAX_DROPOUT_TIME;
+  rtpbin->max_misorder_time = DEFAULT_MAX_MISORDER_TIME;
 
   /* some default SDES entries */
   cname = g_strdup_printf ("user%u@host-%x", g_random_int (), g_random_int ());
@@ -2412,6 +2526,45 @@ gst_rtp_bin_set_property (GObject * object, guint prop_id,
       GST_RTP_BIN_UNLOCK (rtpbin);
       break;
     }
+    case PROP_RTCP_SYNC_SEND_TIME:{
+      GSList *sessions;
+      GST_RTP_BIN_LOCK (rtpbin);
+      rtpbin->rtcp_sync_send_time = g_value_get_boolean (value);
+      for (sessions = rtpbin->sessions; sessions;
+          sessions = g_slist_next (sessions)) {
+        GstRtpBinSession *session = (GstRtpBinSession *) sessions->data;
+
+        g_object_set (G_OBJECT (session->session),
+            "rtcp-sync-send-time", rtpbin->rtcp_sync_send_time, NULL);
+      }
+      GST_RTP_BIN_UNLOCK (rtpbin);
+      break;
+    }
+    case PROP_MAX_RTCP_RTP_TIME_DIFF:
+      GST_RTP_BIN_LOCK (rtpbin);
+      rtpbin->max_rtcp_rtp_time_diff = g_value_get_int (value);
+      GST_RTP_BIN_UNLOCK (rtpbin);
+      gst_rtp_bin_propagate_property_to_jitterbuffer (rtpbin,
+          "max-rtcp-rtp-time-diff", value);
+      break;
+    case PROP_MAX_DROPOUT_TIME:
+      GST_RTP_BIN_LOCK (rtpbin);
+      rtpbin->max_dropout_time = g_value_get_uint (value);
+      GST_RTP_BIN_UNLOCK (rtpbin);
+      gst_rtp_bin_propagate_property_to_jitterbuffer (rtpbin,
+          "max-dropout-time", value);
+      gst_rtp_bin_propagate_property_to_session (rtpbin, "max-dropout-time",
+          value);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      GST_RTP_BIN_LOCK (rtpbin);
+      rtpbin->max_misorder_time = g_value_get_uint (value);
+      GST_RTP_BIN_UNLOCK (rtpbin);
+      gst_rtp_bin_propagate_property_to_jitterbuffer (rtpbin,
+          "max-misorder-time", value);
+      gst_rtp_bin_propagate_property_to_session (rtpbin, "max-dropout-time",
+          value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -2479,6 +2632,21 @@ gst_rtp_bin_get_property (GObject * object, guint prop_id,
       break;
     case PROP_NTP_TIME_SOURCE:
       g_value_set_enum (value, rtpbin->ntp_time_source);
+      break;
+    case PROP_RTCP_SYNC_SEND_TIME:
+      g_value_set_boolean (value, rtpbin->rtcp_sync_send_time);
+      break;
+    case PROP_MAX_RTCP_RTP_TIME_DIFF:
+      GST_RTP_BIN_LOCK (rtpbin);
+      g_value_set_int (value, rtpbin->max_rtcp_rtp_time_diff);
+      GST_RTP_BIN_UNLOCK (rtpbin);
+      break;
+    case PROP_MAX_DROPOUT_TIME:
+      g_value_set_uint (value, rtpbin->max_dropout_time);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      g_value_set_uint (value, rtpbin->max_misorder_time);
+      break;
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

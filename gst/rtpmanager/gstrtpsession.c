@@ -208,6 +208,8 @@ enum
   SIGNAL_ON_BYE_TIMEOUT,
   SIGNAL_ON_TIMEOUT,
   SIGNAL_ON_SENDER_TIMEOUT,
+  SIGNAL_ON_NEW_SENDER_SSRC,
+  SIGNAL_ON_SENDER_SSRC_ACTIVE,
   LAST_SIGNAL
 };
 
@@ -221,8 +223,11 @@ enum
 #define DEFAULT_USE_PIPELINE_CLOCK   FALSE
 #define DEFAULT_RTCP_MIN_INTERVAL    (RTP_STATS_MIN_INTERVAL * GST_SECOND)
 #define DEFAULT_PROBATION            RTP_DEFAULT_PROBATION
+#define DEFAULT_MAX_DROPOUT_TIME     60000
+#define DEFAULT_MAX_MISORDER_TIME    2000
 #define DEFAULT_RTP_PROFILE          GST_RTP_PROFILE_AVP
 #define DEFAULT_NTP_TIME_SOURCE      GST_RTP_NTP_TIME_SOURCE_NTP
+#define DEFAULT_RTCP_SYNC_SEND_TIME  TRUE
 
 enum
 {
@@ -238,9 +243,12 @@ enum
   PROP_USE_PIPELINE_CLOCK,
   PROP_RTCP_MIN_INTERVAL,
   PROP_PROBATION,
+  PROP_MAX_DROPOUT_TIME,
+  PROP_MAX_MISORDER_TIME,
   PROP_STATS,
   PROP_RTP_PROFILE,
-  PROP_NTP_TIME_SOURCE
+  PROP_NTP_TIME_SOURCE,
+  PROP_RTCP_SYNC_SEND_TIME
 };
 
 #define GST_RTP_SESSION_GET_PRIVATE(obj)  \
@@ -274,6 +282,7 @@ struct _GstRtpSessionPrivate
 
   gboolean use_pipeline_clock;
   GstRtpNtpTimeSource ntp_time_source;
+  gboolean rtcp_sync_send_time;
 
   guint rtx_count;
 };
@@ -441,6 +450,27 @@ on_sender_timeout (RTPSession * session, RTPSource * src, GstRtpSession * sess)
       src->ssrc);
 }
 
+static void
+on_new_sender_ssrc (RTPSession * session, RTPSource * src, GstRtpSession * sess)
+{
+  g_signal_emit (sess, gst_rtp_session_signals[SIGNAL_ON_NEW_SENDER_SSRC], 0,
+      src->ssrc);
+}
+
+static void
+on_sender_ssrc_active (RTPSession * session, RTPSource * src,
+    GstRtpSession * sess)
+{
+  g_signal_emit (sess, gst_rtp_session_signals[SIGNAL_ON_SENDER_SSRC_ACTIVE], 0,
+      src->ssrc);
+}
+
+static void
+on_notify_stats (RTPSession * session, GParamSpec *spec, GstRtpSession *rtpsession)
+{
+  g_object_notify (G_OBJECT (rtpsession), "stats");
+}
+
 #define gst_rtp_session_parent_class parent_class
 G_DEFINE_TYPE (GstRtpSession, gst_rtp_session, GST_TYPE_ELEMENT);
 
@@ -517,7 +547,7 @@ gst_rtp_session_class_init (GstRtpSessionClass * klass)
           on_ssrc_validated), NULL, NULL, g_cclosure_marshal_VOID__UINT,
       G_TYPE_NONE, 1, G_TYPE_UINT);
   /**
-   * GstRtpSession::on-ssrc_active:
+   * GstRtpSession::on-ssrc-active:
    * @sess: the object which received the signal
    * @ssrc: the SSRC
    *
@@ -586,6 +616,35 @@ gst_rtp_session_class_init (GstRtpSessionClass * klass)
           on_sender_timeout), NULL, NULL, g_cclosure_marshal_VOID__UINT,
       G_TYPE_NONE, 1, G_TYPE_UINT);
 
+  /**
+   * GstRtpSession::on-new-sender-ssrc:
+   * @sess: the object which received the signal
+   * @ssrc: the sender SSRC
+   *
+   * Since: 1.8
+   *
+   * Notify of a new sender SSRC that entered @session.
+   */
+  gst_rtp_session_signals[SIGNAL_ON_NEW_SENDER_SSRC] =
+      g_signal_new ("on-new-sender-ssrc", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstRtpSessionClass, on_new_ssrc),
+      NULL, NULL, g_cclosure_marshal_VOID__UINT, G_TYPE_NONE, 1, G_TYPE_UINT);
+
+  /**
+   * GstRtpSession::on-sender-ssrc-active:
+   * @sess: the object which received the signal
+   * @ssrc: the sender SSRC
+   *
+   * Since: 1.8
+   *
+   * Notify of a sender SSRC that is active, i.e., sending RTCP.
+   */
+  gst_rtp_session_signals[SIGNAL_ON_SENDER_SSRC_ACTIVE] =
+      g_signal_new ("on-sender-ssrc-active", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstRtpSessionClass,
+          on_ssrc_active), NULL, NULL, g_cclosure_marshal_VOID__UINT,
+      G_TYPE_NONE, 1, G_TYPE_UINT);
+
   g_object_class_install_property (gobject_class, PROP_BANDWIDTH,
       g_param_spec_double ("bandwidth", "Bandwidth",
           "The bandwidth of the session in bytes per second (0 for auto-discover)",
@@ -651,6 +710,18 @@ gst_rtp_session_class_init (GstRtpSessionClass * klass)
           0, G_MAXUINT, DEFAULT_PROBATION,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  g_object_class_install_property (gobject_class, PROP_MAX_DROPOUT_TIME,
+      g_param_spec_uint ("max-dropout-time", "Max dropout time",
+          "The maximum time (milliseconds) of missing packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_DROPOUT_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_MAX_MISORDER_TIME,
+      g_param_spec_uint ("max-misorder-time", "Max misorder time",
+          "The maximum time (milliseconds) of misordered packets tolerated.",
+          0, G_MAXUINT, DEFAULT_MAX_MISORDER_TIME,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   /**
    * GstRtpSession::stats:
    *
@@ -663,6 +734,8 @@ gst_rtp_session_class_init (GstRtpSessionClass * klass)
    *      dropped (due to bandwidth constraints)
    *  "sent-nack-count" G_TYPE_UINT   Number of NACKs sent
    *  "recv-nack-count" G_TYPE_UINT   Number of NACKs received
+   *  "source-stats"    G_TYPE_BOXED  GValueArray of #RTPSource::stats for all
+   *      RTP sources (Since 1.8)
    *
    * Since: 1.4
    */
@@ -680,6 +753,13 @@ gst_rtp_session_class_init (GstRtpSessionClass * klass)
       g_param_spec_enum ("ntp-time-source", "NTP Time Source",
           "NTP time source for RTCP packets",
           gst_rtp_ntp_time_source_get_type (), DEFAULT_NTP_TIME_SOURCE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_RTCP_SYNC_SEND_TIME,
+      g_param_spec_boolean ("rtcp-sync-send-time", "RTCP Sync Send Time",
+          "Use send time or capture time for RTCP sync "
+          "(TRUE = send time, FALSE = capture time)",
+          DEFAULT_RTCP_SYNC_SEND_TIME,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gstelement_class->change_state =
@@ -726,6 +806,7 @@ gst_rtp_session_init (GstRtpSession * rtpsession)
   rtpsession->priv->sysclock = gst_system_clock_obtain ();
   rtpsession->priv->session = rtp_session_new ();
   rtpsession->priv->use_pipeline_clock = DEFAULT_USE_PIPELINE_CLOCK;
+  rtpsession->priv->rtcp_sync_send_time = DEFAULT_RTCP_SYNC_SEND_TIME;
 
   /* configure callbacks */
   rtp_session_set_callbacks (rtpsession->priv->session, &callbacks, rtpsession);
@@ -748,6 +829,12 @@ gst_rtp_session_init (GstRtpSession * rtpsession)
       (GCallback) on_timeout, rtpsession);
   g_signal_connect (rtpsession->priv->session, "on-sender-timeout",
       (GCallback) on_sender_timeout, rtpsession);
+  g_signal_connect (rtpsession->priv->session, "on-new-sender-ssrc",
+      (GCallback) on_new_sender_ssrc, rtpsession);
+  g_signal_connect (rtpsession->priv->session, "on-sender-ssrc-active",
+      (GCallback) on_sender_ssrc_active, rtpsession);
+  g_signal_connect (rtpsession->priv->session, "notify::stats",
+      (GCallback) on_notify_stats, rtpsession);
   rtpsession->priv->ptmap = g_hash_table_new_full (NULL, NULL, NULL,
       (GDestroyNotify) gst_caps_unref);
 
@@ -815,11 +902,22 @@ gst_rtp_session_set_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       g_object_set_property (G_OBJECT (priv->session), "probation", value);
       break;
+    case PROP_MAX_DROPOUT_TIME:
+      g_object_set_property (G_OBJECT (priv->session), "max-dropout-time",
+          value);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      g_object_set_property (G_OBJECT (priv->session), "max-misorder-time",
+          value);
+      break;
     case PROP_RTP_PROFILE:
       g_object_set_property (G_OBJECT (priv->session), "rtp-profile", value);
       break;
     case PROP_NTP_TIME_SOURCE:
       priv->ntp_time_source = g_value_get_enum (value);
+      break;
+    case PROP_RTCP_SYNC_SEND_TIME:
+      priv->rtcp_sync_send_time = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -875,6 +973,14 @@ gst_rtp_session_get_property (GObject * object, guint prop_id,
     case PROP_PROBATION:
       g_object_get_property (G_OBJECT (priv->session), "probation", value);
       break;
+    case PROP_MAX_DROPOUT_TIME:
+      g_object_get_property (G_OBJECT (priv->session), "max-dropout-time",
+          value);
+      break;
+    case PROP_MAX_MISORDER_TIME:
+      g_object_get_property (G_OBJECT (priv->session), "max-misorder-time",
+          value);
+      break;
     case PROP_STATS:
       g_value_take_boxed (value, gst_rtp_session_create_stats (rtpsession));
       break;
@@ -883,6 +989,9 @@ gst_rtp_session_get_property (GObject * object, guint prop_id,
       break;
     case PROP_NTP_TIME_SOURCE:
       g_value_set_enum (value, priv->ntp_time_source);
+      break;
+    case PROP_RTCP_SYNC_SEND_TIME:
+      g_value_set_boolean (value, priv->rtcp_sync_send_time);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -946,6 +1055,7 @@ get_current_times (GstRtpSession * rtpsession, GstClockTime * running_time,
           ntpns = clock_time;
           break;
         default:
+          ntpns = -1;
           g_assert_not_reached ();
           break;
       }
@@ -2174,7 +2284,8 @@ gst_rtp_session_chain_send_rtp_common (GstRtpSession * rtpsession,
     running_time =
         gst_segment_to_running_time (&rtpsession->send_rtp_seg, GST_FORMAT_TIME,
         timestamp);
-    running_time += priv->send_latency;
+    if (priv->rtcp_sync_send_time)
+      running_time += priv->send_latency;
   } else {
     /* no timestamp. */
     running_time = -1;
