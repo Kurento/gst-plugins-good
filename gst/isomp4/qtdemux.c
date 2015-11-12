@@ -602,6 +602,9 @@ gst_qtdemux_init (GstQTDemux * qtdemux)
   qtdemux->upstream_format_is_time = FALSE;
   qtdemux->have_group_id = FALSE;
   qtdemux->group_id = G_MAXUINT;
+  qtdemux->cenc_aux_info_offset = 0;
+  qtdemux->cenc_aux_info_sizes = NULL;
+  qtdemux->cenc_aux_sample_count = 0;
   qtdemux->protection_system_ids = NULL;
   g_queue_init (&qtdemux->protection_event_queue);
   gst_segment_init (&qtdemux->segment, GST_FORMAT_TIME);
@@ -623,6 +626,9 @@ gst_qtdemux_dispose (GObject * object)
   g_queue_foreach (&qtdemux->protection_event_queue, (GFunc) gst_event_unref,
       NULL);
   g_queue_clear (&qtdemux->protection_event_queue);
+
+  g_free (qtdemux->cenc_aux_info_sizes);
+  qtdemux->cenc_aux_info_sizes = NULL;
 
   G_OBJECT_CLASS (parent_class)->dispose (object);
 }
@@ -3386,15 +3392,16 @@ qtdemux_parse_moof (GstQTDemux * qtdemux, const guint8 * buffer, guint length,
         qtdemux_tree_get_child_by_type_full (traf_node, FOURCC_saiz,
         &saiz_data);
     if (saiz_node) {
-      guint8 *info_sizes;
-      guint32 sample_count;
       guint32 info_type = 0;
       guint64 offset = 0;
       guint32 info_type_parameter = 0;
 
-      info_sizes = qtdemux_parse_saiz (qtdemux, stream, &saiz_data,
-          &sample_count);
-      if (G_UNLIKELY (info_sizes == NULL)) {
+      g_free (qtdemux->cenc_aux_info_sizes);
+
+      qtdemux->cenc_aux_info_sizes =
+          qtdemux_parse_saiz (qtdemux, stream, &saiz_data,
+          &qtdemux->cenc_aux_sample_count);
+      if (qtdemux->cenc_aux_info_sizes == NULL) {
         GST_ERROR_OBJECT (qtdemux, "failed to parse saiz box");
         goto fail;
       }
@@ -3403,13 +3410,16 @@ qtdemux_parse_moof (GstQTDemux * qtdemux, const guint8 * buffer, guint length,
           &saio_data);
       if (!saio_node) {
         GST_ERROR_OBJECT (qtdemux, "saiz box without a corresponding saio box");
+        g_free (qtdemux->cenc_aux_info_sizes);
+        qtdemux->cenc_aux_info_sizes = NULL;
         goto fail;
       }
 
       if (G_UNLIKELY (!qtdemux_parse_saio (qtdemux, stream, &saio_data,
                   &info_type, &info_type_parameter, &offset))) {
         GST_ERROR_OBJECT (qtdemux, "failed to parse saio box");
-        g_free (info_sizes);
+        g_free (qtdemux->cenc_aux_info_sizes);
+        qtdemux->cenc_aux_info_sizes = NULL;
         goto fail;
       }
       if (base_offset > qtdemux->moof_offset)
@@ -3417,19 +3427,20 @@ qtdemux_parse_moof (GstQTDemux * qtdemux, const guint8 * buffer, guint length,
       if (info_type == FOURCC_cenc && info_type_parameter == 0U) {
         GstByteReader br;
         if (offset > length) {
-          GST_ERROR_OBJECT (qtdemux, "cenc auxiliary info outside moof "
-              "boxes is not supported");
-          g_free (info_sizes);
-          goto fail;
-        }
-        gst_byte_reader_init (&br, buffer + offset, length - offset);
-        if (!qtdemux_parse_cenc_aux_info (qtdemux, stream, &br,
-                info_sizes, sample_count)) {
-          GST_ERROR_OBJECT (qtdemux, "failed to parse cenc auxiliary info");
-          goto fail;
+          GST_DEBUG_OBJECT (qtdemux, "cenc auxiliary info stored out of moof");
+          qtdemux->cenc_aux_info_offset = offset;
+        } else {
+          gst_byte_reader_init (&br, buffer + offset, length - offset);
+          if (!qtdemux_parse_cenc_aux_info (qtdemux, stream, &br,
+                  qtdemux->cenc_aux_info_sizes,
+                  qtdemux->cenc_aux_sample_count)) {
+            GST_ERROR_OBJECT (qtdemux, "failed to parse cenc auxiliary info");
+            g_free (qtdemux->cenc_aux_info_sizes);
+            qtdemux->cenc_aux_info_sizes = NULL;
+            goto fail;
+          }
         }
       }
-      g_free (info_sizes);
     }
 
     tfdt_node =
@@ -4120,8 +4131,6 @@ eos:
  * This will push out a NEWSEGMENT event with the right values and
  * position the stream index to the first decodable sample before
  * @offset.
- *
- * PULL-BASED
  */
 static gboolean
 gst_qtdemux_activate_segment (GstQTDemux * qtdemux, QtDemuxStream * stream,
@@ -4252,6 +4261,10 @@ gst_qtdemux_activate_segment (GstQTDemux * qtdemux, QtDemuxStream * stream,
     stream->to_sample = G_MAXUINT32;
     return TRUE;
   }
+
+  /* We don't need to look for a sample in push-based */
+  if (!qtdemux->pullbased)
+    return TRUE;
 
   /* and move to the keyframe before the indicated media time of the
    * segment */
@@ -5518,6 +5531,62 @@ gst_qtdemux_drop_data (GstQTDemux * demux, gint bytes)
   demux->todrop -= bytes;
 }
 
+static void
+gst_qtdemux_check_send_pending_segment (GstQTDemux * demux)
+{
+  if (G_UNLIKELY (demux->pending_newsegment)) {
+    gint i;
+
+    gst_qtdemux_push_pending_newsegment (demux);
+    /* clear to send tags on all streams */
+    for (i = 0; i < demux->n_streams; i++) {
+      QtDemuxStream *stream;
+      stream = demux->streams[i];
+      gst_qtdemux_push_tags (demux, stream);
+      if (stream->sparse) {
+        GST_INFO_OBJECT (demux, "Sending gap event on stream %d", i);
+        gst_pad_push_event (stream->pad,
+            gst_event_new_gap (stream->segment.position, GST_CLOCK_TIME_NONE));
+      }
+    }
+  }
+}
+
+static void
+gst_qtdemux_stream_send_initial_gap_segments (GstQTDemux * demux,
+    QtDemuxStream * stream)
+{
+  gint i;
+
+  /* Push any initial gap segments before proceeding to the
+   * 'real' data */
+  for (i = 0; i < stream->n_segments; i++) {
+    gst_qtdemux_activate_segment (demux, stream, i, stream->time_position);
+
+    if (QTSEGMENT_IS_EMPTY (&stream->segments[i])) {
+      GstClockTime ts, dur;
+      GstEvent *gap;
+
+      ts = stream->time_position;
+      dur =
+          stream->segments[i].duration - (stream->time_position -
+          stream->segments[i].time);
+      gap = gst_event_new_gap (ts, dur);
+      stream->time_position += dur;
+
+      GST_DEBUG_OBJECT (stream->pad, "Pushing gap for empty "
+          "segment: %" GST_PTR_FORMAT, gap);
+      gst_pad_push_event (stream->pad, gap);
+    } else {
+      /* Only support empty segment at the beginning followed by
+       * one non-empty segment, this was checked when parsing the
+       * edts atom, arriving here is unexpected */
+      g_assert (i + 1 == stream->n_segments);
+      break;
+    }
+  }
+}
+
 static GstFlowReturn
 gst_qtdemux_chain (GstPad * sinkpad, GstObject * parent, GstBuffer * inbuf)
 {
@@ -5687,6 +5756,8 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
         extract_initial_length_and_fourcc (data, demux->neededbytes, NULL,
             &fourcc);
         if (fourcc == FOURCC_moov) {
+          gint n;
+
           /* in usual fragmented setup we could try to scan for more
            * and end up at the the moov (after mdat) again */
           if (demux->got_moov && demux->n_streams > 0 &&
@@ -5720,7 +5791,6 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
             if (!demux->got_moov)
               qtdemux_expose_streams (demux);
             else {
-              gint n;
 
               for (n = 0; n < demux->n_streams; n++) {
                 QtDemuxStream *stream = demux->streams[n];
@@ -5730,6 +5800,11 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
             }
 
             demux->got_moov = TRUE;
+            gst_qtdemux_check_send_pending_segment (demux);
+            for (n = 0; n < demux->n_streams; n++) {
+              gst_qtdemux_stream_send_initial_gap_segments (demux,
+                  demux->streams[n]);
+            }
 
             g_node_destroy (demux->moov_node);
             demux->moov_node = NULL;
@@ -5928,26 +6003,34 @@ gst_qtdemux_process_adapter (GstQTDemux * demux, gboolean force)
         }
 
         if (demux->todrop) {
+          if (demux->cenc_aux_info_offset > 0) {
+            GstByteReader br;
+            const guint8 *data;
+
+            GST_DEBUG_OBJECT (demux, "parsing cenc auxiliary info");
+            data = gst_adapter_map (demux->adapter, demux->todrop);
+            gst_byte_reader_init (&br, data + 8, demux->todrop);
+            if (!qtdemux_parse_cenc_aux_info (demux, demux->streams[0], &br,
+                    demux->cenc_aux_info_sizes, demux->cenc_aux_sample_count)) {
+              GST_ERROR_OBJECT (demux, "failed to parse cenc auxiliary info");
+              ret = GST_FLOW_ERROR;
+              gst_adapter_unmap (demux->adapter);
+              g_free (demux->cenc_aux_info_sizes);
+              demux->cenc_aux_info_sizes = NULL;
+              goto done;
+            }
+            demux->cenc_aux_info_offset = 0;
+            g_free (demux->cenc_aux_info_sizes);
+            demux->cenc_aux_info_sizes = NULL;
+            gst_adapter_unmap (demux->adapter);
+          }
           gst_qtdemux_drop_data (demux, demux->todrop);
         }
 
         /* first buffer? */
         /* initial newsegment sent here after having added pads,
          * possible others in sink_event */
-        if (G_UNLIKELY (demux->pending_newsegment)) {
-          gst_qtdemux_push_pending_newsegment (demux);
-          /* clear to send tags on all streams */
-          for (i = 0; i < demux->n_streams; i++) {
-            stream = demux->streams[i];
-            gst_qtdemux_push_tags (demux, stream);
-            if (stream->sparse) {
-              GST_INFO_OBJECT (demux, "Sending gap event on stream %d", i);
-              gst_pad_push_event (stream->pad,
-                  gst_event_new_gap (stream->segment.position,
-                      GST_CLOCK_TIME_NONE));
-            }
-          }
-        }
+        gst_qtdemux_check_send_pending_segment (demux);
 
         /* Figure out which stream this packet belongs to */
         for (i = 0; i < demux->n_streams; i++) {
@@ -7844,6 +7927,10 @@ qtdemux_parse_segments (GstQTDemux * qtdemux, QtDemuxStream * stream,
     GNode * trak)
 {
   GNode *edts;
+  /* accept edts if they contain gaps at start and there is only
+   * one media segment */
+  gboolean allow_pushbased_edts = TRUE;
+  gint media_segments_count = 0;
 
   /* parse and prepare segment info from the edit list */
   GST_DEBUG_OBJECT (qtdemux, "looking for edit list container");
@@ -7896,6 +7983,7 @@ qtdemux_parse_segments (GstQTDemux * qtdemux, QtDemuxStream * stream,
       if (media_time != G_MAXUINT32) {
         segment->media_start = QTSTREAMTIME_TO_GSTTIME (stream, media_time);
         segment->media_stop = segment->media_start + segment->duration;
+        media_segments_count++;
       } else {
         segment->media_start = GST_CLOCK_TIME_NONE;
         segment->media_stop = GST_CLOCK_TIME_NONE;
@@ -7933,12 +8021,14 @@ qtdemux_parse_segments (GstQTDemux * qtdemux, QtDemuxStream * stream,
     }
     GST_DEBUG_OBJECT (qtdemux, "found %d segments", count);
     stream->n_segments = count;
+    if (media_segments_count != 1)
+      allow_pushbased_edts = FALSE;
   }
 done:
 
   /* push based does not handle segments, so act accordingly here,
    * and warn if applicable */
-  if (!qtdemux->pullbased) {
+  if (!qtdemux->pullbased && !allow_pushbased_edts) {
     GST_WARNING_OBJECT (qtdemux, "streaming; discarding edit list segments");
     /* remove and use default one below, we stream like it anyway */
     g_free (stream->segments);
