@@ -342,6 +342,8 @@ static gboolean gst_rtspsrc_stream_push_event (GstRTSPSrc * src,
     GstRTSPStream * stream, GstEvent * event);
 static gboolean gst_rtspsrc_push_event (GstRTSPSrc * src, GstEvent * event);
 static void gst_rtspsrc_connection_flush (GstRTSPSrc * src, gboolean flush);
+static GstRTSPResult gst_rtsp_conninfo_close (GstRTSPSrc * src,
+    GstRTSPConnInfo * info, gboolean free);
 
 typedef struct
 {
@@ -1082,26 +1084,22 @@ gst_rtspsrc_set_property (GObject * object, guint prop_id, const GValue * value,
       gst_rtspsrc_set_proxy (rtspsrc, g_value_get_string (value));
       break;
     case PROP_PROXY_ID:
-      if (rtspsrc->prop_proxy_id)
-        g_free (rtspsrc->prop_proxy_id);
+      g_free (rtspsrc->prop_proxy_id);
       rtspsrc->prop_proxy_id = g_value_dup_string (value);
       break;
     case PROP_PROXY_PW:
-      if (rtspsrc->prop_proxy_pw)
-        g_free (rtspsrc->prop_proxy_pw);
+      g_free (rtspsrc->prop_proxy_pw);
       rtspsrc->prop_proxy_pw = g_value_dup_string (value);
       break;
     case PROP_RTP_BLOCKSIZE:
       rtspsrc->rtp_blocksize = g_value_get_uint (value);
       break;
     case PROP_USER_ID:
-      if (rtspsrc->user_id)
-        g_free (rtspsrc->user_id);
+      g_free (rtspsrc->user_id);
       rtspsrc->user_id = g_value_dup_string (value);
       break;
     case PROP_USER_PW:
-      if (rtspsrc->user_pw)
-        g_free (rtspsrc->user_pw);
+      g_free (rtspsrc->user_pw);
       rtspsrc->user_pw = g_value_dup_string (value);
       break;
     case PROP_BUFFER_MODE:
@@ -1112,10 +1110,8 @@ gst_rtspsrc_set_property (GObject * object, guint prop_id, const GValue * value,
       const gchar *str;
 
       str = g_value_get_string (value);
-      if (str) {
-        sscanf (str, "%u-%u",
-            &rtspsrc->client_port_range.min, &rtspsrc->client_port_range.max);
-      } else {
+      if (sscanf (str, "%u-%u", &rtspsrc->client_port_range.min,
+              &rtspsrc->client_port_range.max) != 2) {
         rtspsrc->client_port_range.min = 0;
         rtspsrc->client_port_range.max = 0;
       }
@@ -4497,69 +4493,90 @@ gst_rtsp_conninfo_connect (GstRTSPSrc * src, GstRTSPConnInfo * info,
     gboolean async)
 {
   GstRTSPResult res;
+  GstRTSPMessage response;
+  gboolean retry = FALSE;
+  memset (&response, 0, sizeof (response));
+  gst_rtsp_message_init (&response);
+  do {
+    if (info->connection == NULL) {
+      if (info->url == NULL) {
+        GST_DEBUG_OBJECT (src, "parsing uri (%s)...", info->location);
+        if ((res = gst_rtsp_url_parse (info->location, &info->url)) < 0)
+          goto parse_error;
+      }
+      /* create connection */
+      GST_DEBUG_OBJECT (src, "creating connection (%s)...", info->location);
+      if ((res = gst_rtsp_connection_create (info->url, &info->connection)) < 0)
+        goto could_not_create;
 
-  if (info->connection == NULL) {
-    if (info->url == NULL) {
-      GST_DEBUG_OBJECT (src, "parsing uri (%s)...", info->location);
-      if ((res = gst_rtsp_url_parse (info->location, &info->url)) < 0)
-        goto parse_error;
-    }
+      if (retry) {
+        gst_rtspsrc_setup_auth (src, &response);
+      }
 
-    /* create connection */
-    GST_DEBUG_OBJECT (src, "creating connection (%s)...", info->location);
-    if ((res = gst_rtsp_connection_create (info->url, &info->connection)) < 0)
-      goto could_not_create;
-
-    if (info->url_str)
       g_free (info->url_str);
-    info->url_str = gst_rtsp_url_get_request_uri (info->url);
+      info->url_str = gst_rtsp_url_get_request_uri (info->url);
 
-    GST_DEBUG_OBJECT (src, "sanitized uri %s", info->url_str);
+      GST_DEBUG_OBJECT (src, "sanitized uri %s", info->url_str);
 
-    if (info->url->transports & GST_RTSP_LOWER_TRANS_TLS) {
-      if (!gst_rtsp_connection_set_tls_validation_flags (info->connection,
-              src->tls_validation_flags))
-        GST_WARNING_OBJECT (src, "Unable to set TLS validation flags");
+      if (info->url->transports & GST_RTSP_LOWER_TRANS_TLS) {
+        if (!gst_rtsp_connection_set_tls_validation_flags (info->connection,
+                src->tls_validation_flags))
+          GST_WARNING_OBJECT (src, "Unable to set TLS validation flags");
 
-      if (src->tls_database)
-        gst_rtsp_connection_set_tls_database (info->connection,
-            src->tls_database);
+        if (src->tls_database)
+          gst_rtsp_connection_set_tls_database (info->connection,
+              src->tls_database);
 
-      if (src->tls_interaction)
-        gst_rtsp_connection_set_tls_interaction (info->connection,
-            src->tls_interaction);
+        if (src->tls_interaction)
+          gst_rtsp_connection_set_tls_interaction (info->connection,
+              src->tls_interaction);
+      }
+
+      if (info->url->transports & GST_RTSP_LOWER_TRANS_HTTP)
+        gst_rtsp_connection_set_tunneled (info->connection, TRUE);
+
+      if (src->proxy_host) {
+        GST_DEBUG_OBJECT (src, "setting proxy %s:%d", src->proxy_host,
+            src->proxy_port);
+        gst_rtsp_connection_set_proxy (info->connection, src->proxy_host,
+            src->proxy_port);
+      }
     }
 
-    if (info->url->transports & GST_RTSP_LOWER_TRANS_HTTP)
-      gst_rtsp_connection_set_tunneled (info->connection, TRUE);
+    if (!info->connected) {
+      /* connect */
+      if (async)
+        GST_ELEMENT_PROGRESS (src, CONTINUE, "connect",
+            ("Connecting to %s", info->location));
+      GST_DEBUG_OBJECT (src, "connecting (%s)...", info->location);
+      res = gst_rtsp_connection_connect_with_response (info->connection,
+          src->ptcp_timeout, &response);
 
-    if (src->proxy_host) {
-      GST_DEBUG_OBJECT (src, "setting proxy %s:%d", src->proxy_host,
-          src->proxy_port);
-      gst_rtsp_connection_set_proxy (info->connection, src->proxy_host,
-          src->proxy_port);
+      if (response.type == GST_RTSP_MESSAGE_HTTP_RESPONSE &&
+          response.type_data.response.code == GST_RTSP_STS_UNAUTHORIZED) {
+        gst_rtsp_conninfo_close (src, info, TRUE);
+        if (!retry)
+          retry = TRUE;
+        else
+          retry = FALSE;        // we should not retry more than once
+      } else {
+        retry = FALSE;
+      }
+
+      if (res == GST_RTSP_OK)
+        info->connected = TRUE;
+      else if (!retry)
+        goto could_not_connect;
     }
-  }
-
-  if (!info->connected) {
-    /* connect */
-    if (async)
-      GST_ELEMENT_PROGRESS (src, CONTINUE, "connect",
-          ("Connecting to %s", info->location));
-    GST_DEBUG_OBJECT (src, "connecting (%s)...", info->location);
-    if ((res =
-            gst_rtsp_connection_connect (info->connection,
-                src->ptcp_timeout)) < 0)
-      goto could_not_connect;
-
-    info->connected = TRUE;
-  }
+  } while (!info->connected && retry);
+  gst_rtsp_message_unset (&response);
   return GST_RTSP_OK;
 
   /* ERRORS */
 parse_error:
   {
     GST_ERROR_OBJECT (src, "No valid RTSP URL was provided");
+    gst_rtsp_message_unset (&response);
     return res;
   }
 could_not_create:
@@ -4567,6 +4584,7 @@ could_not_create:
     gchar *str = gst_rtsp_strresult (res);
     GST_ERROR_OBJECT (src, "Could not create connection. (%s)", str);
     g_free (str);
+    gst_rtsp_message_unset (&response);
     return res;
   }
 could_not_connect:
@@ -4574,6 +4592,7 @@ could_not_connect:
     gchar *str = gst_rtsp_strresult (res);
     GST_ERROR_OBJECT (src, "Could not connect to server. (%s)", str);
     g_free (str);
+    gst_rtsp_message_unset (&response);
     return res;
   }
 }

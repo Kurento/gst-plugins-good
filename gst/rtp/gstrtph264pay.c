@@ -124,11 +124,12 @@ gst_rtp_h264_pay_class_init (GstRtpH264PayClass * klass)
 
   g_object_class_install_property (G_OBJECT_CLASS (klass),
       PROP_CONFIG_INTERVAL,
-      g_param_spec_uint ("config-interval",
+      g_param_spec_int ("config-interval",
           "SPS PPS Send Interval",
           "Send SPS and PPS Insertion Interval in seconds (sprop parameter sets "
-          "will be multiplexed in the data stream when detected.) (0 = disabled)",
-          0, 3600, DEFAULT_CONFIG_INTERVAL,
+          "will be multiplexed in the data stream when detected.) "
+          "(0 = disabled, -1 = send with every IDR frame)",
+          -1, 3600, DEFAULT_CONFIG_INTERVAL,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
       );
 
@@ -829,6 +830,10 @@ gst_rtp_h264_pay_payload_nal (GstRTPBasePayload * basepayload,
       GST_DEBUG_OBJECT (rtph264pay, "no previous SPS/PPS time, send now");
       send_spspps = TRUE;
     }
+  } else if (nalType == IDR_TYPE_ID && rtph264pay->spspps_interval == -1) {
+    GST_DEBUG_OBJECT (rtph264pay, "sending SPS/PPS before current IDR frame");
+    /* send SPS/PPS before every IDR frame */
+    send_spspps = TRUE;
   }
 
   if (send_spspps || rtph264pay->send_spspps) {
@@ -1373,7 +1378,7 @@ gst_rtp_h264_pay_set_property (GObject * object, guint prop_id,
       rtph264pay->update_caps = TRUE;
       break;
     case PROP_CONFIG_INTERVAL:
-      rtph264pay->spspps_interval = g_value_get_uint (value);
+      rtph264pay->spspps_interval = g_value_get_int (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1394,7 +1399,7 @@ gst_rtp_h264_pay_get_property (GObject * object, guint prop_id,
       g_value_set_string (value, rtph264pay->sprop_parameter_sets);
       break;
     case PROP_CONFIG_INTERVAL:
-      g_value_set_uint (value, rtph264pay->spspps_interval);
+      g_value_set_int (value, rtph264pay->spspps_interval);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

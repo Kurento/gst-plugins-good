@@ -948,15 +948,14 @@ void sample_table_entry_add_ext_atom (SampleTableEntry * ste, AtomInfo * ext);
 AtomInfo *   build_codec_data_extension  (guint32 fourcc, const GstBuffer * codec_data);
 AtomInfo *   build_mov_aac_extension     (AtomTRAK * trak, const GstBuffer * codec_data,
                                           guint32 avg_bitrate, guint32 max_bitrate);
-AtomInfo *   build_mov_alac_extension    (AtomTRAK * trak, const GstBuffer * codec_data);
+AtomInfo *   build_mov_alac_extension    (const GstBuffer * codec_data);
 AtomInfo *   build_esds_extension        (AtomTRAK * trak, guint8 object_type,
                                           guint8 stream_type, const GstBuffer * codec_data,
                                           guint32 avg_bitrate, guint32 max_bitrate);
 AtomInfo *   build_btrt_extension        (guint32 buffer_size_db, guint32 avg_bitrate,
                                           guint32 max_bitrate);
-AtomInfo *   build_jp2h_extension        (AtomTRAK * trak, gint width, gint height,
-                                          const gchar *colorspace, gint ncomp,
-                                          const GValue * cmap_array,
+AtomInfo *   build_jp2h_extension        (gint width, gint height, const gchar *colorspace,
+                                          gint ncomp, const GValue * cmap_array,
                                           const GValue * cdef_array);
 
 AtomInfo *   build_jp2x_extension        (const GstBuffer * prefix);
@@ -964,6 +963,11 @@ AtomInfo *   build_fiel_extension        (gint fields);
 AtomInfo *   build_ac3_extension         (guint8 fscod, guint8 bsid,
                                           guint8 bsmod, guint8 acmod,
                                           guint8 lfe_on, guint8 bitrate_code);
+AtomInfo *   build_opus_extension        (guint32 rate, guint8 channels, guint8 mapping_family,
+                                          guint8 stream_count, guint8 coupled_count,
+                                          guint8 channel_mapping[256], guint16 pre_skip,
+                                          guint16 output_gain);
+
 AtomInfo *   build_amr_extension         (void);
 AtomInfo *   build_h263_extension        (void);
 AtomInfo *   build_gama_atom             (gdouble gamma);

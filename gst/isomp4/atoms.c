@@ -2965,9 +2965,7 @@ atom_trak_tx3g_update_dimension (AtomTRAK * trak, guint32 width, guint32 height)
 static void
 atom_tag_data_alloc_data (AtomTagData * data, guint size)
 {
-  if (data->data != NULL) {
-    g_free (data->data);
-  }
+  g_free (data->data);
   data->data = g_new0 (guint8, size);
   data->datalen = size;
 }
@@ -3185,8 +3183,7 @@ atom_hdlr_set_type (AtomHDLR * hdlr, AtomsContext * context, guint32 comp_type,
 static void
 atom_hdlr_set_name (AtomHDLR * hdlr, const char *name)
 {
-  if (hdlr->name)
-    g_free (hdlr->name);
+  g_free (hdlr->name);
   hdlr->name = g_strdup (name);
 }
 
@@ -3471,7 +3468,7 @@ atom_trak_set_audio_type (AtomTRAK * trak, AtomsContext * context,
 }
 
 static AtomInfo *
-build_pasp_extension (AtomTRAK * trak, gint par_width, gint par_height)
+build_pasp_extension (gint par_width, gint par_height)
 {
   AtomData *atom_data = atom_data_new (FOURCC_pasp);
   guint8 *data;
@@ -3534,7 +3531,7 @@ atom_trak_set_video_type (AtomTRAK * trak, AtomsContext * context,
   /* QT spec has a pasp extension atom in stsd that can hold PAR */
   if (par_n && (context->flavor == ATOMS_TREE_FLAVOR_MOV)) {
     ste->extension_atoms = g_list_append (ste->extension_atoms,
-        build_pasp_extension (trak, par_n, par_d));
+        build_pasp_extension (par_n, par_d));
   }
 
   return ste;
@@ -4288,8 +4285,8 @@ build_btrt_extension (guint32 buffer_size_db, guint32 avg_bitrate,
 }
 
 static AtomInfo *
-build_mov_wave_extension (AtomTRAK * trak, guint32 fourcc, AtomInfo * atom1,
-    AtomInfo * atom2, gboolean terminator)
+build_mov_wave_extension (guint32 fourcc, AtomInfo * atom1, AtomInfo * atom2,
+    gboolean terminator)
 {
   AtomWAVE *wave;
   AtomFRMA *frma;
@@ -4342,17 +4339,17 @@ build_mov_aac_extension (AtomTRAK * trak, const GstBuffer * codec_data,
   mp4a = build_codec_data_extension (FOURCC_mp4a, buf);
   gst_buffer_unref (buf);
 
-  return build_mov_wave_extension (trak, FOURCC_mp4a, mp4a, esds, TRUE);
+  return build_mov_wave_extension (FOURCC_mp4a, mp4a, esds, TRUE);
 }
 
 AtomInfo *
-build_mov_alac_extension (AtomTRAK * trak, const GstBuffer * codec_data)
+build_mov_alac_extension (const GstBuffer * codec_data)
 {
   AtomInfo *alac;
 
   alac = build_codec_data_extension (FOURCC_alac, codec_data);
 
-  return build_mov_wave_extension (trak, FOURCC_alac, NULL, alac, TRUE);
+  return build_mov_wave_extension (FOURCC_alac, NULL, alac, TRUE);
 }
 
 AtomInfo *
@@ -4365,8 +4362,7 @@ build_fiel_extension (gint fields)
     return NULL;
   }
 
-  atom_data =
-      atom_data_new_from_data (GST_MAKE_FOURCC ('f', 'i', 'e', 'l'), &f, 1);
+  atom_data = atom_data_new_from_data (FOURCC_fiel, &f, 1);
 
   return build_atom_info_wrapper ((Atom *) atom_data, atom_data_copy_data,
       atom_data_free);
@@ -4381,18 +4377,15 @@ build_jp2x_extension (const GstBuffer * prefix)
     return NULL;
   }
 
-  atom_data =
-      atom_data_new_from_gst_buffer (GST_MAKE_FOURCC ('j', 'p', '2', 'x'),
-      prefix);
+  atom_data = atom_data_new_from_gst_buffer (FOURCC_jp2x, prefix);
 
   return build_atom_info_wrapper ((Atom *) atom_data, atom_data_copy_data,
       atom_data_free);
 }
 
 AtomInfo *
-build_jp2h_extension (AtomTRAK * trak, gint width, gint height,
-    const gchar * colorspace, gint ncomp, const GValue * cmap_array,
-    const GValue * cdef_array)
+build_jp2h_extension (gint width, gint height, const gchar * colorspace,
+    gint ncomp, const GValue * cmap_array, const GValue * cdef_array)
 {
   AtomData *atom_data;
   GstBuffer *buf;
@@ -4439,8 +4432,7 @@ build_jp2h_extension (AtomTRAK * trak, gint width, gint height,
 
   /* ihdr = image header box */
   gst_byte_writer_put_uint32_be_unchecked (&writer, 22);
-  gst_byte_writer_put_uint32_le_unchecked (&writer, GST_MAKE_FOURCC ('i', 'h',
-          'd', 'r'));
+  gst_byte_writer_put_uint32_le_unchecked (&writer, FOURCC_ihdr);
   gst_byte_writer_put_uint32_be_unchecked (&writer, height);
   gst_byte_writer_put_uint32_be_unchecked (&writer, width);
   gst_byte_writer_put_uint16_be_unchecked (&writer, ncomp);
@@ -4455,8 +4447,7 @@ build_jp2h_extension (AtomTRAK * trak, gint width, gint height,
 
   /* colour specification box */
   gst_byte_writer_put_uint32_be_unchecked (&writer, 15);
-  gst_byte_writer_put_uint32_le_unchecked (&writer, GST_MAKE_FOURCC ('c', 'o',
-          'l', 'r'));
+  gst_byte_writer_put_uint32_le_unchecked (&writer, FOURCC_colr);
 
   /* specification method: enumerated */
   gst_byte_writer_put_uint8_unchecked (&writer, 0x1);
@@ -4469,8 +4460,7 @@ build_jp2h_extension (AtomTRAK * trak, gint width, gint height,
 
   if (cmap_array) {
     gst_byte_writer_put_uint32_be_unchecked (&writer, cmap_size);
-    gst_byte_writer_put_uint32_le_unchecked (&writer,
-        GST_MAKE_FOURCC ('c', 'm', 'a', 'p'));
+    gst_byte_writer_put_uint32_le_unchecked (&writer, FOURCC_cmap);
     for (i = 0; i < cmap_array_size; i++) {
       const GValue *item;
       gint value;
@@ -4497,8 +4487,7 @@ build_jp2h_extension (AtomTRAK * trak, gint width, gint height,
 
   if (cdef_array) {
     gst_byte_writer_put_uint32_be_unchecked (&writer, cdef_size);
-    gst_byte_writer_put_uint32_le_unchecked (&writer,
-        GST_MAKE_FOURCC ('c', 'd', 'e', 'f'));
+    gst_byte_writer_put_uint32_le_unchecked (&writer, FOURCC_cdef);
     gst_byte_writer_put_uint16_be_unchecked (&writer, cdef_array_size);
     for (i = 0; i < cdef_array_size; i++) {
       const GValue *item;
@@ -4564,7 +4553,7 @@ build_amr_extension (void)
   GST_WRITE_UINT8 (ext + 8, 1);
 
   buf = GST_BUFFER_NEW_READONLY (ext, sizeof (ext));
-  res = build_codec_data_extension (GST_MAKE_FOURCC ('d', 'a', 'm', 'r'), buf);
+  res = build_codec_data_extension (FOURCC_damr, buf);
   gst_buffer_unref (buf);
   return res;
 }
@@ -4586,7 +4575,7 @@ build_h263_extension (void)
   GST_WRITE_UINT8 (ext + 6, 0);
 
   buf = GST_BUFFER_NEW_READONLY (ext, sizeof (ext));
-  res = build_codec_data_extension (GST_MAKE_FOURCC ('d', '2', '6', '3'), buf);
+  res = build_codec_data_extension (FOURCC_d263, buf);
   gst_buffer_unref (buf);
   return res;
 }
@@ -4725,6 +4714,44 @@ build_ac3_extension (guint8 fscod, guint8 bsid, guint8 bsmod, guint8 acmod,
       ((bsmod & 0x3) << 6) | (acmod << 3) | ((lfe_on & 1) << 2) | ((bitrate_code
           >> 3) & 0x3);
   data[2] = ((bitrate_code & 0x7) << 5);
+
+  return build_atom_info_wrapper ((Atom *) atom_data, atom_data_copy_data,
+      atom_data_free);
+}
+
+AtomInfo *
+build_opus_extension (guint32 rate, guint8 channels, guint8 mapping_family,
+    guint8 stream_count, guint8 coupled_count, guint8 channel_mapping[256],
+    guint16 pre_skip, guint16 output_gain)
+{
+  AtomData *atom_data;
+  guint8 *data_block;
+  GstByteWriter bw;
+  gboolean hdl = TRUE;
+  guint data_block_len;
+
+  gst_byte_writer_init (&bw);
+  hdl &= gst_byte_writer_put_uint8 (&bw, 0x00); /* version number */
+  hdl &= gst_byte_writer_put_uint8 (&bw, channels);
+  hdl &= gst_byte_writer_put_uint16_le (&bw, pre_skip);
+  hdl &= gst_byte_writer_put_uint32_le (&bw, rate);
+  hdl &= gst_byte_writer_put_uint16_le (&bw, output_gain);
+  hdl &= gst_byte_writer_put_uint8 (&bw, mapping_family);
+  if (mapping_family > 0) {
+    hdl &= gst_byte_writer_put_uint8 (&bw, stream_count);
+    hdl &= gst_byte_writer_put_uint8 (&bw, coupled_count);
+    hdl &= gst_byte_writer_put_data (&bw, channel_mapping, channels);
+  }
+
+  if (!hdl) {
+    GST_WARNING ("Error creating header");
+    return NULL;
+  }
+
+  data_block_len = gst_byte_writer_get_size (&bw);
+  data_block = gst_byte_writer_reset_and_get_data (&bw);
+  atom_data = atom_data_new_from_data (FOURCC_dops, data_block, data_block_len);
+  g_free (data_block);
 
   return build_atom_info_wrapper ((Atom *) atom_data, atom_data_copy_data,
       atom_data_free);

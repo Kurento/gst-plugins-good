@@ -54,6 +54,7 @@
 GST_DEBUG_CATEGORY (v4l2_debug);
 #define GST_CAT_DEFAULT v4l2_debug
 
+#ifdef GST_V4L2_ENABLE_PROBE
 /* This is a minimalist probe, for speed, we only enumerate formats */
 static GstCaps *
 gst_v4l2_probe_template_caps (const gchar * device, gint video_fd,
@@ -167,6 +168,13 @@ gst_v4l2_probe_and_register (GstPlugin * plugin)
         gst_v4l2_probe_template_caps (it->device_path, video_fd,
             V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE));
 
+    /* Skip devices without any supported formats */
+    if (gst_caps_is_empty (sink_caps) || gst_caps_is_empty (src_caps)) {
+      gst_caps_unref (sink_caps);
+      gst_caps_unref (src_caps);
+      continue;
+    }
+
     basename = g_path_get_basename (it->device_path);
 
     if (gst_v4l2_is_video_dec (sink_caps, src_caps))
@@ -192,11 +200,20 @@ gst_v4l2_probe_and_register (GstPlugin * plugin)
 
   return ret;
 }
+#endif
 
 static gboolean
 plugin_init (GstPlugin * plugin)
 {
+  const gchar *paths[] = { "/dev", "/dev/v4l2", NULL };
+  const gchar *names[] = { "video", NULL };
+
   GST_DEBUG_CATEGORY_INIT (v4l2_debug, "v4l2", 0, "V4L2 API calls");
+
+  /* Add some depedency, so the dynamic features get updated upon changes in
+   * /dev/video* */
+  gst_plugin_add_dependency (plugin,
+      NULL, paths, names, GST_PLUGIN_DEPENDENCY_FLAG_FILE_NAME_IS_PREFIX);
 
   if (!gst_element_register (plugin, "v4l2src", GST_RANK_PRIMARY,
           GST_TYPE_V4L2SRC) ||
@@ -205,9 +222,12 @@ plugin_init (GstPlugin * plugin)
       !gst_element_register (plugin, "v4l2radio", GST_RANK_NONE,
           GST_TYPE_V4L2RADIO) ||
       !gst_device_provider_register (plugin, "v4l2deviceprovider",
-          GST_RANK_PRIMARY, GST_TYPE_V4L2_DEVICE_PROVIDER) ||
+          GST_RANK_PRIMARY, GST_TYPE_V4L2_DEVICE_PROVIDER)
       /* etc. */
-      !gst_v4l2_probe_and_register (plugin))
+#ifdef GST_V4L2_ENABLE_PROBE
+      || !gst_v4l2_probe_and_register (plugin)
+#endif
+      )
     return FALSE;
 
 #ifdef ENABLE_NLS

@@ -122,6 +122,7 @@
 #include <gst/audio/audio.h>
 #include <gst/video/video.h>
 #include <gst/tag/tag.h>
+#include <gst/pbutils/pbutils.h>
 
 #include <sys/types.h>
 #ifdef G_OS_WIN32
@@ -2461,10 +2462,8 @@ gst_qt_mux_update_edit_lists (GstQTMux * qtmux)
       guint32 lateness = 0;
       guint32 duration = qtpad->trak->tkhd.duration;
       gboolean has_gap;
-      gboolean has_shift;
 
       has_gap = (qtpad->first_ts > (qtmux->first_ts + qtpad->dts_adjustment));
-      has_shift = (qtpad->dts_adjustment > 0);
 
       if (has_gap) {
         GstClockTime diff;
@@ -2480,11 +2479,14 @@ gst_qt_mux_update_edit_lists (GstQTMux * qtmux)
             (guint32) (1 * 65536.0));
       }
 
-      if (has_gap || has_shift) {
-        GstClockTime ctts;
+      /* has shift */
+      if (has_gap || (qtpad->dts_adjustment > 0)) {
+        GstClockTime ctts = 0;
         guint32 media_start;
 
-        ctts = qtpad->first_ts - qtpad->first_dts;
+        if (qtpad->first_ts > qtpad->first_dts)
+          ctts = qtpad->first_ts - qtpad->first_dts;
+
         media_start = gst_util_uint64_scale_round (ctts,
             atom_trak_get_timescale (qtpad->trak), GST_SECOND);
 
@@ -3644,7 +3646,7 @@ gst_qt_mux_audio_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
       GST_WARNING_OBJECT (qtmux, "unexpected codec-data size, possibly broken");
     }
     if (format == GST_QT_MUX_FORMAT_QT)
-      ext_atom = build_mov_alac_extension (qtpad->trak, codec_config);
+      ext_atom = build_mov_alac_extension (codec_config);
     else
       ext_atom = build_codec_data_extension (FOURCC_alac, codec_config);
     /* set some more info */
@@ -3665,6 +3667,49 @@ gst_qt_mux_audio_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
      * the stream itself. Abuse the prepare_buf_func so we parse a frame
      * and get the needed data */
     qtpad->prepare_buf_func = gst_qt_mux_prepare_parse_ac3_frame;
+  } else if (strcmp (mimetype, "audio/x-opus") == 0) {
+    /* Based on the specification defined in:
+     * https://www.opus-codec.org/docs/opus_in_isobmff.html */
+    guint8 channels, mapping_family, stream_count, coupled_count;
+    guint16 pre_skip;
+    gint16 output_gain;
+    guint32 rate;
+    guint8 channel_mapping[256];
+    const GValue *streamheader;
+    const GValue *first_element;
+    GstBuffer *header;
+
+    entry.fourcc = FOURCC_opus;
+    entry.sample_size = 16;
+
+    streamheader = gst_structure_get_value (structure, "streamheader");
+    if (streamheader && GST_VALUE_HOLDS_ARRAY (streamheader) &&
+        gst_value_array_get_size (streamheader) != 0) {
+      first_element = gst_value_array_get_value (streamheader, 0);
+      header = gst_value_get_buffer (first_element);
+      if (!gst_codec_utils_opus_parse_header (header, &rate, &channels,
+              &mapping_family, &stream_count, &coupled_count, channel_mapping,
+              &pre_skip, &output_gain)) {
+        GST_ERROR_OBJECT (qtmux, "Incomplete OpusHead");
+        goto refuse_caps;
+      }
+    } else {
+      GST_WARNING_OBJECT (qtmux,
+          "no streamheader field in caps %" GST_PTR_FORMAT, caps);
+
+      if (!gst_codec_utils_opus_parse_caps (caps, &rate, &channels,
+              &mapping_family, &stream_count, &coupled_count,
+              channel_mapping)) {
+        GST_ERROR_OBJECT (qtmux, "Incomplete Opus caps");
+        goto refuse_caps;
+      }
+      pre_skip = 0;
+      output_gain = 0;
+    }
+
+    entry.channels = channels;
+    ext_atom = build_opus_extension (rate, channels, mapping_family,
+        stream_count, coupled_count, channel_mapping, pre_skip, output_gain);
   }
 
   if (!entry.fourcc)
@@ -3957,15 +4002,15 @@ gst_qt_mux_video_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
     switch (version) {
       case 25:
         if (pal)
-          entry.fourcc = GST_MAKE_FOURCC ('d', 'v', 'c', 'p');
+          entry.fourcc = FOURCC_dvcp;
         else
-          entry.fourcc = GST_MAKE_FOURCC ('d', 'v', 'c', ' ');
+          entry.fourcc = FOURCC_dvc_;
         break;
       case 50:
         if (pal)
-          entry.fourcc = GST_MAKE_FOURCC ('d', 'v', '5', 'p');
+          entry.fourcc = FOURCC_dv5p;
         else
-          entry.fourcc = GST_MAKE_FOURCC ('d', 'v', '5', 'n');
+          entry.fourcc = FOURCC_dv5n;
         break;
       default:
         GST_WARNING_OBJECT (qtmux, "unrecognized dv version");
@@ -3998,8 +4043,8 @@ gst_qt_mux_video_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
     colorspace = gst_structure_get_string (structure, "colorspace");
     if (colorspace &&
         (ext_atom =
-            build_jp2h_extension (qtpad->trak, width, height, colorspace, ncomp,
-                cmap_array, cdef_array)) != NULL) {
+            build_jp2h_extension (width, height, colorspace, ncomp, cmap_array,
+                cdef_array)) != NULL) {
       ext_atom_list = g_list_append (ext_atom_list, ext_atom);
 
       ext_atom = build_fiel_extension (fields);
@@ -4033,13 +4078,13 @@ gst_qt_mux_video_sink_set_caps (GstQTPad * qtpad, GstCaps * caps)
 
     variant = gst_structure_get_string (structure, "format");
     if (!variant || !g_strcmp0 (variant, "standard"))
-      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', 'c', 'n');
+      entry.fourcc = FOURCC_apcn;
     else if (!g_strcmp0 (variant, "lt"))
-      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', 'c', 's');
+      entry.fourcc = FOURCC_apcs;
     else if (!g_strcmp0 (variant, "hq"))
-      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', 'c', 'h');
+      entry.fourcc = FOURCC_apch;
     else if (!g_strcmp0 (variant, "proxy"))
-      entry.fourcc = GST_MAKE_FOURCC ('a', 'p', '4', 'h');
+      entry.fourcc = FOURCC_ap4h;
   }
 
   if (!entry.fourcc)

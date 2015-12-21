@@ -163,7 +163,7 @@ run_test (const char *format, ...)
       rc = 302;
     GST_INFO ("debug: %s", debug);
     /* should not've gotten any output in case of a 40x error. Wait a bit
-     * to give streaming thread a chance to push out a buffer and triggering
+     * to give the streaming thread a chance to push out a buffer and trigger
      * our callback before shutting down the pipeline */
     g_usleep (G_USEC_PER_SEC / 2);
     fail_unless (buf == NULL);
@@ -387,8 +387,9 @@ GST_START_TEST (test_icy_stream)
   gst_bin_add (GST_BIN (pipe), sink);
   fail_unless (gst_element_link (src, sink));
 
-  /* Virgin Radio 32kbps mp3 shoutcast stream */
-  g_object_set (src, "location", "http://mp3-vr-32.smgradio.com:80/", NULL);
+  /* Radionomy Hot40Music shoutcast stream */
+  g_object_set (src, "location",
+      "http://streaming.radionomy.com:80/Hot40Music", NULL);
 
   /* EOS after the first buffer */
   g_object_set (src, "num-buffers", 1, NULL);

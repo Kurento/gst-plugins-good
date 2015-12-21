@@ -430,8 +430,15 @@ gst_directsound_sink_open (GstAudioSink * asink)
 
   dsoundsink = GST_DIRECTSOUND_SINK (asink);
 
-  if (dsoundsink->device_id)
+  if (dsoundsink->device_id) {
     lpGuid = string_to_guid (dsoundsink->device_id);
+    if (lpGuid == NULL) {
+      GST_ELEMENT_ERROR (dsoundsink, RESOURCE, OPEN_READ,
+          ("gst_directsound_sink_open: device set, but guid not found: %s",
+              dsoundsink->device_id), (NULL));
+      return FALSE;
+    }
+  }
 
   /* create and initialize a DirecSound object */
   if (FAILED (hRes = DirectSoundCreate (lpGuid, &dsoundsink->pDS, NULL))) {
@@ -548,6 +555,7 @@ gst_directsound_sink_prepare (GstAudioSink * asink,
   }
 
   gst_directsound_sink_set_volume (dsoundsink, dsoundsink->volume, FALSE);
+  gst_directsound_sink_set_mute (dsoundsink, dsoundsink->mute);
 
   return TRUE;
 }
@@ -589,8 +597,8 @@ static gint
 gst_directsound_sink_write (GstAudioSink * asink, gpointer data, guint length)
 {
   GstDirectSoundSink *dsoundsink;
-  DWORD dwStatus;
-  HRESULT hRes;
+  DWORD dwStatus = 0;
+  HRESULT hRes, hRes2;
   LPVOID pLockedBuffer1 = NULL, pLockedBuffer2 = NULL;
   DWORD dwSizeBuffer1, dwSizeBuffer2;
   DWORD dwCurrentPlayCursor;
@@ -603,10 +611,10 @@ gst_directsound_sink_write (GstAudioSink * asink, gpointer data, guint length)
   hRes = IDirectSoundBuffer_GetStatus (dsoundsink->pDSBSecondary, &dwStatus);
 
   /* get current play cursor position */
-  hRes = IDirectSoundBuffer_GetCurrentPosition (dsoundsink->pDSBSecondary,
+  hRes2 = IDirectSoundBuffer_GetCurrentPosition (dsoundsink->pDSBSecondary,
       &dwCurrentPlayCursor, NULL);
 
-  if (SUCCEEDED (hRes) && (dwStatus & DSBSTATUS_PLAYING)) {
+  if (SUCCEEDED (hRes) && SUCCEEDED (hRes2) && (dwStatus & DSBSTATUS_PLAYING)) {
     DWORD dwFreeBufferSize;
 
   calculate_freesize:
@@ -624,14 +632,19 @@ gst_directsound_sink_write (GstAudioSink * asink, gpointer data, guint length)
       hRes = IDirectSoundBuffer_GetCurrentPosition (dsoundsink->pDSBSecondary,
           &dwCurrentPlayCursor, NULL);
 
-      hRes =
+      hRes2 =
           IDirectSoundBuffer_GetStatus (dsoundsink->pDSBSecondary, &dwStatus);
-      if (SUCCEEDED (hRes) && (dwStatus & DSBSTATUS_PLAYING))
+      if (SUCCEEDED (hRes) && SUCCEEDED (hRes2)
+          && (dwStatus & DSBSTATUS_PLAYING))
         goto calculate_freesize;
       else {
         dsoundsink->first_buffer_after_reset = FALSE;
         GST_DSOUND_UNLOCK (dsoundsink);
-        return 0;
+        GST_ELEMENT_ERROR (dsoundsink, RESOURCE, OPEN_WRITE,
+            ("gst_directsound_sink_write: IDirectSoundBuffer_GetStatus %s, IDirectSoundBuffer_GetCurrentPosition: %s, dwStatus: %lu",
+                DXGetErrorString9 (hRes2), DXGetErrorString9 (hRes), dwStatus),
+            (NULL));
+        return -1;
       }
     }
   }
@@ -690,7 +703,7 @@ gst_directsound_sink_delay (GstAudioSink * asink)
   /* get current buffer status */
   hRes = IDirectSoundBuffer_GetStatus (dsoundsink->pDSBSecondary, &dwStatus);
 
-  if (dwStatus & DSBSTATUS_PLAYING) {
+  if (SUCCEEDED (hRes) && (dwStatus & DSBSTATUS_PLAYING)) {
     /*evaluate the number of samples in queue in the circular buffer */
     hRes = IDirectSoundBuffer_GetCurrentPosition (dsoundsink->pDSBSecondary,
         &dwCurrentPlayCursor, NULL);
@@ -891,10 +904,10 @@ gst_directsound_sink_set_volume (GstDirectSoundSink * dsoundsink,
      * here, so remap.
      */
     long dsVolume;
-    if (dsoundsink->volume == 0)
+    if (volume == 0)
       dsVolume = -10000;
     else
-      dsVolume = 100 * (long) (20 * log10 ((double) dsoundsink->volume / 100.));
+      dsVolume = 100 * (long) (20 * log10 ((double) volume / 100.));
     dsVolume = CLAMP (dsVolume, -10000, 0);
 
     GST_DEBUG_OBJECT (dsoundsink,
@@ -913,16 +926,20 @@ gst_directsound_sink_get_volume (GstDirectSoundSink * dsoundsink)
 static void
 gst_directsound_sink_set_mute (GstDirectSoundSink * dsoundsink, gboolean mute)
 {
-  if (mute)
+  if (mute) {
     gst_directsound_sink_set_volume (dsoundsink, 0, FALSE);
-  else
+    dsoundsink->mute = TRUE;
+  } else {
     gst_directsound_sink_set_volume (dsoundsink, dsoundsink->volume, FALSE);
+    dsoundsink->mute = FALSE;
+  }
+
 }
 
 static gboolean
 gst_directsound_sink_get_mute (GstDirectSoundSink * dsoundsink)
 {
-  return FALSE;
+  return dsoundsink->mute;
 }
 
 static const gchar *

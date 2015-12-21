@@ -124,7 +124,8 @@ enum
   PROP_SSL_USE_SYSTEM_CA_FILE,
   PROP_TLS_DATABASE,
   PROP_RETRIES,
-  PROP_METHOD
+  PROP_METHOD,
+  PROP_TLS_INTERACTION,
 };
 
 #define DEFAULT_USER_AGENT           "GStreamer souphttpsrc "
@@ -136,6 +137,7 @@ enum
 #define DEFAULT_SSL_CA_FILE          NULL
 #define DEFAULT_SSL_USE_SYSTEM_CA_FILE TRUE
 #define DEFAULT_TLS_DATABASE         NULL
+#define DEFAULT_TLS_INTERACTION      NULL
 #define DEFAULT_TIMEOUT              15
 #define DEFAULT_RETRIES              3
 #define DEFAULT_SOUP_METHOD          NULL
@@ -380,6 +382,20 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
           "TLS database with anchor certificate authorities used to validate the server certificate",
           G_TYPE_TLS_DATABASE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  /**
+   * GstSoupHTTPSrc::tls-interaction:
+   *
+   * A #GTlsInteraction object to be used when the connection or certificate
+   * database need to interact with the user. This will be used to prompt the
+   * user for passwords or certificate where necessary.
+   *
+   * Since: 1.8
+   */
+  g_object_class_install_property (gobject_class, PROP_TLS_INTERACTION,
+      g_param_spec_object ("tls-interaction", "TLS interaction",
+          "A GTlsInteraction object to be used when the connection or certificate database need to interact with the user.",
+          G_TYPE_TLS_INTERACTION, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
  /**
    * GstSoupHTTPSrc::retries:
    *
@@ -484,6 +500,7 @@ gst_soup_http_src_init (GstSoupHTTPSrc * src)
   src->ssl_strict = DEFAULT_SSL_STRICT;
   src->ssl_use_system_ca_file = DEFAULT_SSL_USE_SYSTEM_CA_FILE;
   src->tls_database = DEFAULT_TLS_DATABASE;
+  src->tls_interaction = DEFAULT_TLS_INTERACTION;
   src->max_retries = DEFAULT_RETRIES;
   src->method = DEFAULT_SOUP_METHOD;
   proxy = g_getenv ("http_proxy");
@@ -520,9 +537,7 @@ gst_soup_http_src_finalize (GObject * gobject)
   g_mutex_clear (&src->mutex);
   g_cond_clear (&src->request_finished_cond);
   g_free (src->location);
-  if (src->redirection_uri) {
-    g_free (src->redirection_uri);
-  }
+  g_free (src->redirection_uri);
   g_free (src->user_agent);
   if (src->proxy != NULL) {
     soup_uri_free (src->proxy);
@@ -543,6 +558,9 @@ gst_soup_http_src_finalize (GObject * gobject)
   if (src->tls_database)
     g_object_unref (src->tls_database);
   g_free (src->method);
+
+  if (src->tls_interaction)
+    g_object_unref (src->tls_interaction);
 
   G_OBJECT_CLASS (parent_class)->finalize (gobject);
 }
@@ -571,8 +589,7 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       break;
     }
     case PROP_USER_AGENT:
-      if (src->user_agent)
-        g_free (src->user_agent);
+      g_free (src->user_agent);
       src->user_agent = g_value_dup_string (value);
       break;
     case PROP_IRADIO_MODE:
@@ -600,23 +617,19 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       gst_base_src_set_live (GST_BASE_SRC (src), g_value_get_boolean (value));
       break;
     case PROP_USER_ID:
-      if (src->user_id)
-        g_free (src->user_id);
+      g_free (src->user_id);
       src->user_id = g_value_dup_string (value);
       break;
     case PROP_USER_PW:
-      if (src->user_pw)
-        g_free (src->user_pw);
+      g_free (src->user_pw);
       src->user_pw = g_value_dup_string (value);
       break;
     case PROP_PROXY_ID:
-      if (src->proxy_id)
-        g_free (src->proxy_id);
+      g_free (src->proxy_id);
       src->proxy_id = g_value_dup_string (value);
       break;
     case PROP_PROXY_PW:
-      if (src->proxy_pw)
-        g_free (src->proxy_pw);
+      g_free (src->proxy_pw);
       src->proxy_pw = g_value_dup_string (value);
       break;
     case PROP_TIMEOUT:
@@ -644,8 +657,7 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       src->ssl_strict = g_value_get_boolean (value);
       break;
     case PROP_SSL_CA_FILE:
-      if (src->ssl_ca_file)
-        g_free (src->ssl_ca_file);
+      g_free (src->ssl_ca_file);
       src->ssl_ca_file = g_value_dup_string (value);
       break;
     case PROP_SSL_USE_SYSTEM_CA_FILE:
@@ -654,6 +666,10 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
     case PROP_TLS_DATABASE:
       g_clear_object (&src->tls_database);
       src->tls_database = g_value_dup_object (value);
+      break;
+    case PROP_TLS_INTERACTION:
+      g_clear_object (&src->tls_interaction);
+      src->tls_interaction = g_value_dup_object (value);
       break;
     case PROP_RETRIES:
       src->max_retries = g_value_get_int (value);
@@ -743,6 +759,9 @@ gst_soup_http_src_get_property (GObject * object, guint prop_id,
       break;
     case PROP_TLS_DATABASE:
       g_value_set_object (value, src->tls_database);
+      break;
+    case PROP_TLS_INTERACTION:
+      g_value_set_object (value, src->tls_interaction);
       break;
     case PROP_RETRIES:
       g_value_set_int (value, src->max_retries);
@@ -936,14 +955,15 @@ gst_soup_http_src_session_open (GstSoupHTTPSrc * src)
           SOUP_SESSION_TIMEOUT, src->timeout,
           SOUP_SESSION_SSL_STRICT, src->ssl_strict,
           SOUP_SESSION_ADD_FEATURE_BY_TYPE, SOUP_TYPE_PROXY_RESOLVER_DEFAULT,
-          NULL);
+          SOUP_SESSION_TLS_INTERACTION, src->tls_interaction, NULL);
     } else {
       src->session =
           soup_session_async_new_with_options (SOUP_SESSION_ASYNC_CONTEXT,
           src->context, SOUP_SESSION_PROXY_URI, src->proxy,
           SOUP_SESSION_TIMEOUT, src->timeout,
           SOUP_SESSION_SSL_STRICT, src->ssl_strict,
-          SOUP_SESSION_USER_AGENT, src->user_agent, NULL);
+          SOUP_SESSION_USER_AGENT, src->user_agent,
+          SOUP_SESSION_TLS_INTERACTION, src->tls_interaction, NULL);
     }
 
     if (!src->session) {

@@ -555,6 +555,17 @@ if test x$HAVE_GST_V4L2 = xyes; then
   fi
 fi
 
+dnl Allow enabling v4l2 device probing
+AC_ARG_ENABLE(
+  v4l2-probe,
+  AC_HELP_STRING(
+    [--enable-v4l2-probe],
+    [enable V4L2 plugin to probe devices @<:@default=no@:>@]))
+if test "x$enable_v4l2_probe" = xyes; then
+  AC_DEFINE(GST_V4L2_ENABLE_PROBE, 1,
+    [Define if Video4Linux probe shall be run at plugin load])
+fi
+
 dnl Check for X11
 translit(dnm, m, l) AM_CONDITIONAL(USE_X, true)
 AG_GST_CHECK_FEATURE(X, [X libraries and plugins],
@@ -743,7 +754,7 @@ AG_GST_CHECK_FEATURE(SHOUT2, [Shoutcast/Icecast client library], shout2, [
 dnl *** soup ***
 translit(dnm, m, l) AM_CONDITIONAL(USE_SOUP, true)
 AG_GST_CHECK_FEATURE(SOUP, [soup http client plugin (2.4)], souphttpsrc, [
-  PKG_CHECK_MODULES(SOUP, libsoup-2.4 >= 2.40, [HAVE_SOUP="yes"], [HAVE_SOUP="no"])
+  PKG_CHECK_MODULES(SOUP, libsoup-2.4 >= 2.48, [HAVE_SOUP="yes"], [HAVE_SOUP="no"])
   AC_SUBST(SOUP_CFLAGS)
   AC_SUBST(SOUP_LIBS)
 ])
@@ -803,6 +814,11 @@ AG_GST_CHECK_FEATURE(VPX, [VPX decoder], vpx, [
         AC_DEFINE(HAVE_VP9_DECODER, 1, [Defined if the VP9 decoder is available])
       ])
     ], [true])
+
+    PKG_CHECK_MODULES(VPX_140, vpx >= 1.4.0, [
+      AC_DEFINE(HAVE_VPX_1_4, 1, [Defined if the VPX library version is 1.4 or bigger])
+    ], [true])
+
     LIBS="$OLD_LIBS"
     CFLAGS="$OLD_CFLAGS"
   fi
