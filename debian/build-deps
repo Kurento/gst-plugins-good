@@ -31,7 +31,7 @@ libgtk-3-dev
 libtag1-dev (>= 1.5)
 libwavpack-dev (>= 4.20)
 gstreamer@GST_ABI@-plugins-base (>= 1.5.0.1+git20150316)
-libsoup2.4-dev (>= 2.40)
+libsoup2.4-dev (>= 2.48)
 libpulse-dev (>= 2.0)
 libbz2-dev
 gstreamer@GST_ABI@-doc
