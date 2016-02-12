@@ -866,7 +866,7 @@ gst_matroska_mux_handle_sink_event (GstCollectPads * pads,
         mux->force_key_unit_event = event;
         event = NULL;
       } else if (gst_structure_has_name (structure, "application/x-gst-dvd") &&
-          !strcmp ("dvd-spu-clut-change",
+          !g_strcmp0 ("dvd-spu-clut-change",
               gst_structure_get_string (structure, "event"))) {
         gchar name[16];
         gint i, value;
@@ -953,10 +953,10 @@ gst_matroska_mux_video_pad_setcaps (GstPad * pad, GstCaps * caps)
   mimetype = gst_structure_get_name (structure);
 
   interlace_mode = gst_structure_get_string (structure, "interlace-mode");
-  if (interlace_mode != NULL && strcmp (interlace_mode, "progressive") != 0)
+  if (interlace_mode != NULL && g_strcmp0 (interlace_mode, "progressive") != 0)
     context->flags |= GST_MATROSKA_VIDEOTRACK_INTERLACED;
 
-  if (!strcmp (mimetype, "video/x-theora")) {
+  if (!g_strcmp0 (mimetype, "video/x-theora")) {
     /* we'll extract the details later from the theora identification header */
     goto skip_details;
   }
@@ -972,8 +972,8 @@ gst_matroska_mux_video_pad_setcaps (GstPad * pad, GstCaps * caps)
 
   /* set vp8 defaults or let user override it */
   if (GST_MATROSKAMUX_PAD_CAST (pad)->frame_duration_user == FALSE
-      && (!strcmp (mimetype, "video/x-vp8")
-          || !strcmp (mimetype, "video/x-vp9")))
+      && (!g_strcmp0 (mimetype, "video/x-vp8")
+          || !g_strcmp0 (mimetype, "video/x-vp9")))
     GST_MATROSKAMUX_PAD_CAST (pad)->frame_duration =
         DEFAULT_PAD_FRAME_DURATION_VP8;
 
@@ -1028,7 +1028,7 @@ skip_details:
     codec_buf = (GstBuffer *) gst_value_get_buffer (value);
 
   /* find type */
-  if (!strcmp (mimetype, "video/x-raw")) {
+  if (!g_strcmp0 (mimetype, "video/x-raw")) {
     const gchar *fstr;
     gst_matroska_mux_set_codec_id (context,
         GST_MATROSKA_CODEC_ID_VIDEO_UNCOMPRESSED);
@@ -1036,31 +1036,31 @@ skip_details:
     if (fstr) {
       if (strlen (fstr) == 4)
         videocontext->fourcc = GST_STR_FOURCC (fstr);
-      else if (!strcmp (fstr, "GRAY8"))
+      else if (!g_strcmp0 (fstr, "GRAY8"))
         videocontext->fourcc = GST_MAKE_FOURCC ('Y', '8', '0', '0');
-      else if (!strcmp (fstr, "BGR"))
+      else if (!g_strcmp0 (fstr, "BGR"))
         videocontext->fourcc = GST_MAKE_FOURCC ('B', 'G', 'R', 24);
-      else if (!strcmp (fstr, "RGB"))
+      else if (!g_strcmp0 (fstr, "RGB"))
         videocontext->fourcc = GST_MAKE_FOURCC ('R', 'G', 'B', 24);
     }
-  } else if (!strcmp (mimetype, "video/x-huffyuv")      /* MS/VfW compatibility cases */
-      ||!strcmp (mimetype, "video/x-divx")
-      || !strcmp (mimetype, "video/x-dv")
-      || !strcmp (mimetype, "video/x-h263")
-      || !strcmp (mimetype, "video/x-msmpeg")
-      || !strcmp (mimetype, "video/x-wmv")
-      || !strcmp (mimetype, "image/jpeg")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-huffyuv")      /* MS/VfW compatibility cases */
+      ||!g_strcmp0 (mimetype, "video/x-divx")
+      || !g_strcmp0 (mimetype, "video/x-dv")
+      || !g_strcmp0 (mimetype, "video/x-h263")
+      || !g_strcmp0 (mimetype, "video/x-msmpeg")
+      || !g_strcmp0 (mimetype, "video/x-wmv")
+      || !g_strcmp0 (mimetype, "image/jpeg")) {
     gst_riff_strf_vids *bih;
     gint size = sizeof (gst_riff_strf_vids);
     guint32 fourcc = 0;
 
-    if (!strcmp (mimetype, "video/x-huffyuv"))
+    if (!g_strcmp0 (mimetype, "video/x-huffyuv"))
       fourcc = GST_MAKE_FOURCC ('H', 'F', 'Y', 'U');
-    else if (!strcmp (mimetype, "video/x-dv"))
+    else if (!g_strcmp0 (mimetype, "video/x-dv"))
       fourcc = GST_MAKE_FOURCC ('D', 'V', 'S', 'D');
-    else if (!strcmp (mimetype, "video/x-h263"))
+    else if (!g_strcmp0 (mimetype, "video/x-h263"))
       fourcc = GST_MAKE_FOURCC ('H', '2', '6', '3');
-    else if (!strcmp (mimetype, "video/x-divx")) {
+    else if (!g_strcmp0 (mimetype, "video/x-divx")) {
       gint divxversion;
 
       gst_structure_get_int (structure, "divxversion", &divxversion);
@@ -1075,7 +1075,7 @@ skip_details:
           fourcc = GST_MAKE_FOURCC ('D', 'X', '5', '0');
           break;
       }
-    } else if (!strcmp (mimetype, "video/x-msmpeg")) {
+    } else if (!g_strcmp0 (mimetype, "video/x-msmpeg")) {
       gint msmpegversion;
 
       gst_structure_get_int (structure, "msmpegversion", &msmpegversion);
@@ -1090,7 +1090,7 @@ skip_details:
           goto msmpeg43;
           break;
       }
-    } else if (!strcmp (mimetype, "video/x-wmv")) {
+    } else if (!g_strcmp0 (mimetype, "video/x-wmv")) {
       gint wmvversion;
       const gchar *fstr;
 
@@ -1106,7 +1106,7 @@ skip_details:
           fourcc = GST_MAKE_FOURCC ('W', 'M', 'V', '3');
         }
       }
-    } else if (!strcmp (mimetype, "image/jpeg")) {
+    } else if (!g_strcmp0 (mimetype, "image/jpeg")) {
       fourcc = GST_MAKE_FOURCC ('M', 'J', 'P', 'G');
     }
 
@@ -1138,7 +1138,7 @@ skip_details:
     context->codec_priv = (gpointer) bih;
     context->codec_priv_size = size;
     context->dts_only = TRUE;
-  } else if (!strcmp (mimetype, "video/x-h264")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-h264")) {
     gst_matroska_mux_set_codec_id (context,
         GST_MATROSKA_CODEC_ID_VIDEO_MPEG4_AVC);
     gst_matroska_mux_free_codec_priv (context);
@@ -1148,7 +1148,7 @@ skip_details:
       context->codec_priv = g_malloc0 (context->codec_priv_size);
       gst_buffer_extract (codec_buf, 0, context->codec_priv, -1);
     }
-  } else if (!strcmp (mimetype, "video/x-h265")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-h265")) {
     gst_matroska_mux_set_codec_id (context,
         GST_MATROSKA_CODEC_ID_VIDEO_MPEGH_HEVC);
     gst_matroska_mux_free_codec_priv (context);
@@ -1158,7 +1158,7 @@ skip_details:
       context->codec_priv = g_malloc0 (context->codec_priv_size);
       gst_buffer_extract (codec_buf, 0, context->codec_priv, -1);
     }
-  } else if (!strcmp (mimetype, "video/x-theora")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-theora")) {
     const GValue *streamheader;
 
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_VIDEO_THEORA);
@@ -1171,13 +1171,13 @@ skip_details:
           ("theora stream headers missing or malformed"));
       goto refuse_caps;
     }
-  } else if (!strcmp (mimetype, "video/x-dirac")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-dirac")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_VIDEO_DIRAC);
-  } else if (!strcmp (mimetype, "video/x-vp8")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-vp8")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_VIDEO_VP8);
-  } else if (!strcmp (mimetype, "video/x-vp9")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-vp9")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_VIDEO_VP9);
-  } else if (!strcmp (mimetype, "video/mpeg")) {
+  } else if (!g_strcmp0 (mimetype, "video/mpeg")) {
     gint mpegversion;
 
     gst_structure_get_int (structure, "mpegversion", &mpegversion);
@@ -1205,11 +1205,11 @@ skip_details:
       context->codec_priv = g_malloc0 (context->codec_priv_size);
       gst_buffer_extract (codec_buf, 0, context->codec_priv, -1);
     }
-  } else if (!strcmp (mimetype, "video/x-msmpeg")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-msmpeg")) {
   msmpeg43:
     /* can only make it here if preceding case verified it was version 3 */
     context->codec_id = g_strdup (GST_MATROSKA_CODEC_ID_VIDEO_MSMPEG4V3);
-  } else if (!strcmp (mimetype, "video/x-pn-realvideo")) {
+  } else if (!g_strcmp0 (mimetype, "video/x-pn-realvideo")) {
     gint rmversion;
     const GValue *mdpr_data;
 
@@ -1251,7 +1251,7 @@ skip_details:
       context->codec_priv = priv_data;
       context->codec_priv_size = priv_data_size;
     }
-  } else if (strcmp (mimetype, "video/x-prores") == 0) {
+  } else if (g_strcmp0 (mimetype, "video/x-prores") == 0) {
     const gchar *variant;
 
     gst_matroska_mux_free_codec_priv (context);
@@ -1777,7 +1777,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
    *       - add new formats
    */
 
-  if (!strcmp (mimetype, "audio/mpeg")) {
+  if (!g_strcmp0 (mimetype, "audio/mpeg")) {
     gint mpegversion = 0;
 
     gst_structure_get_int (structure, "mpegversion", &mpegversion);
@@ -1830,7 +1830,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
         stream_format = gst_structure_get_string (structure, "stream-format");
         /* check this is raw aac */
         if (stream_format) {
-          if (strcmp (stream_format, "raw") != 0) {
+          if (g_strcmp0 (stream_format, "raw") != 0) {
             GST_WARNING_OBJECT (mux, "AAC stream-format must be 'raw', not %s",
                 stream_format);
           }
@@ -1858,7 +1858,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
       default:
         goto refuse_caps;
     }
-  } else if (!strcmp (mimetype, "audio/x-raw")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-raw")) {
     GstAudioInfo info;
 
     gst_audio_info_init (&info);
@@ -1899,7 +1899,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
     }
 
     audiocontext->bitdepth = GST_AUDIO_INFO_WIDTH (&info);
-  } else if (!strcmp (mimetype, "audio/x-vorbis")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-vorbis")) {
     const GValue *streamheader;
 
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_VORBIS);
@@ -1912,7 +1912,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
           ("vorbis stream headers missing or malformed"));
       goto refuse_caps;
     }
-  } else if (!strcmp (mimetype, "audio/x-flac")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-flac")) {
     const GValue *streamheader;
 
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_FLAC);
@@ -1925,7 +1925,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
           ("flac stream headers missing or malformed"));
       goto refuse_caps;
     }
-  } else if (!strcmp (mimetype, "audio/x-speex")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-speex")) {
     const GValue *streamheader;
 
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_SPEEX);
@@ -1937,7 +1937,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
           ("speex stream headers missing or malformed"));
       goto refuse_caps;
     }
-  } else if (!strcmp (mimetype, "audio/x-opus")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-opus")) {
     const GValue *streamheader;
 
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_OPUS);
@@ -1951,13 +1951,13 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
         goto refuse_caps;
       }
     }
-  } else if (!strcmp (mimetype, "audio/x-ac3")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-ac3")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_AC3);
-  } else if (!strcmp (mimetype, "audio/x-eac3")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-eac3")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_EAC3);
-  } else if (!strcmp (mimetype, "audio/x-dts")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-dts")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_DTS);
-  } else if (!strcmp (mimetype, "audio/x-tta")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-tta")) {
     gint width;
 
     /* TTA frame duration */
@@ -1967,7 +1967,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
     audiocontext->bitdepth = width;
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_AUDIO_TTA);
 
-  } else if (!strcmp (mimetype, "audio/x-pn-realaudio")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-pn-realaudio")) {
     gint raversion;
     const GValue *mdpr_data;
 
@@ -2007,10 +2007,10 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
       context->codec_priv_size = priv_data_size;
     }
 
-  } else if (!strcmp (mimetype, "audio/x-wma")
-      || !strcmp (mimetype, "audio/x-alaw")
-      || !strcmp (mimetype, "audio/x-mulaw")
-      || !strcmp (mimetype, "audio/x-adpcm")) {
+  } else if (!g_strcmp0 (mimetype, "audio/x-wma")
+      || !g_strcmp0 (mimetype, "audio/x-alaw")
+      || !g_strcmp0 (mimetype, "audio/x-mulaw")
+      || !g_strcmp0 (mimetype, "audio/x-adpcm")) {
     guint8 *codec_priv;
     guint codec_priv_size;
     guint16 format = 0;
@@ -2022,7 +2022,7 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
       goto refuse_caps;
     }
 
-    if (!strcmp (mimetype, "audio/x-wma")) {
+    if (!g_strcmp0 (mimetype, "audio/x-wma")) {
       gint wmaversion;
       gint depth;
 
@@ -2051,17 +2051,17 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
 
       if (gst_structure_get_int (structure, "depth", &depth))
         audiocontext->bitdepth = depth;
-    } else if (!strcmp (mimetype, "audio/x-alaw")
-        || !strcmp (mimetype, "audio/x-mulaw")) {
+    } else if (!g_strcmp0 (mimetype, "audio/x-alaw")
+        || !g_strcmp0 (mimetype, "audio/x-mulaw")) {
       audiocontext->bitdepth = 8;
-      if (!strcmp (mimetype, "audio/x-alaw"))
+      if (!g_strcmp0 (mimetype, "audio/x-alaw"))
         format = GST_RIFF_WAVE_FORMAT_ALAW;
       else
         format = GST_RIFF_WAVE_FORMAT_MULAW;
 
       block_align = channels;
       bitrate = block_align * samplerate;
-    } else if (!strcmp (mimetype, "audio/x-adpcm")) {
+    } else if (!g_strcmp0 (mimetype, "audio/x-adpcm")) {
       const char *layout;
 
       layout = gst_structure_get_string (structure, "layout");
@@ -2075,9 +2075,9 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
         goto refuse_caps;
       }
 
-      if (!strcmp (layout, "dvi")) {
+      if (!g_strcmp0 (layout, "dvi")) {
         format = GST_RIFF_WAVE_FORMAT_DVI_ADPCM;
-      } else if (!strcmp (layout, "g726")) {
+      } else if (!g_strcmp0 (layout, "g726")) {
         format = GST_RIFF_WAVE_FORMAT_ITU_G726_ADPCM;
         if (!gst_structure_get_int (structure, "bitrate", &bitrate)) {
           GST_WARNING_OBJECT (mux, "Missing bitrate on adpcm g726 caps");
@@ -2180,7 +2180,7 @@ gst_matroska_mux_subtitle_pad_setcaps (GstPad * pad, GstCaps * caps)
   scontext->invalid_utf8 = 0;
   context->default_duration = 0;
 
-  if (!strcmp (mimetype, "subtitle/x-kate")) {
+  if (!g_strcmp0 (mimetype, "subtitle/x-kate")) {
     const GValue *streamheader;
 
     gst_matroska_mux_set_codec_id (context,
@@ -2195,16 +2195,16 @@ gst_matroska_mux_subtitle_pad_setcaps (GstPad * pad, GstCaps * caps)
       ret = FALSE;
       goto exit;
     }
-  } else if (!strcmp (mimetype, "text/x-raw")) {
+  } else if (!g_strcmp0 (mimetype, "text/x-raw")) {
     gst_matroska_mux_set_codec_id (context,
         GST_MATROSKA_CODEC_ID_SUBTITLE_UTF8);
-  } else if (!strcmp (mimetype, "application/x-ssa")) {
+  } else if (!g_strcmp0 (mimetype, "application/x-ssa")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_SUBTITLE_SSA);
-  } else if (!strcmp (mimetype, "application/x-ass")) {
+  } else if (!g_strcmp0 (mimetype, "application/x-ass")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_SUBTITLE_ASS);
-  } else if (!strcmp (mimetype, "application/x-usf")) {
+  } else if (!g_strcmp0 (mimetype, "application/x-usf")) {
     gst_matroska_mux_set_codec_id (context, GST_MATROSKA_CODEC_ID_SUBTITLE_USF);
-  } else if (!strcmp (mimetype, "subpicture/x-dvd")) {
+  } else if (!g_strcmp0 (mimetype, "subpicture/x-dvd")) {
     gst_matroska_mux_set_codec_id (context,
         GST_MATROSKA_CODEC_ID_SUBTITLE_VOBSUB);
   } else {
@@ -2982,7 +2982,7 @@ gst_matroska_mux_write_simple_tag (const GstTagList * list, const gchar * tag,
     const gchar *tagname_gst = tag_conv[i].gstreamer_tagname;
     const gchar *tagname_mkv = tag_conv[i].matroska_tagname;
 
-    if (strcmp (tagname_gst, tag) == 0) {
+    if (g_strcmp0 (tagname_gst, tag) == 0) {
       GValue src = { 0, };
       gchar *dest;
 
@@ -3489,13 +3489,12 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
   }
 
   /* for dirac we have to queue up everything up to a picture unit */
-  if (collect_pad->track->codec_id != NULL &&
-      strcmp (collect_pad->track->codec_id,
+  if (g_strcmp0 (collect_pad->track->codec_id,
           GST_MATROSKA_CODEC_ID_VIDEO_DIRAC) == 0) {
     buf = gst_matroska_mux_handle_dirac_packet (mux, collect_pad, buf);
     if (!buf)
       return GST_FLOW_OK;
-  } else if (strcmp (collect_pad->track->codec_id,
+  } else if (g_strcmp0 (collect_pad->track->codec_id,
           GST_MATROSKA_CODEC_ID_VIDEO_PRORES) == 0) {
     /* Remove the 'Frame container atom' header' */
     buf = gst_buffer_make_writable (buf);
@@ -3516,7 +3515,7 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
     return GST_FLOW_OK;
   }
 
-  if (!strcmp (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)
+  if (!g_strcmp0 (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)
       && collect_pad->track->codec_delay) {
     /* All timestamps should include the codec delay */
     if (buffer_timestamp > collect_pad->track->codec_delay) {
@@ -3536,8 +3535,8 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
           GST_TIME_ARGS (buffer_timestamp));
       is_video_keyframe = TRUE;
     } else if (GST_BUFFER_FLAG_IS_SET (buf, GST_BUFFER_FLAG_DECODE_ONLY) &&
-        (!strcmp (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP8)
-            || !strcmp (collect_pad->track->codec_id,
+        (!g_strcmp0 (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP8)
+            || !g_strcmp0 (collect_pad->track->codec_id,
                 GST_MATROSKA_CODEC_ID_VIDEO_VP9))) {
       GST_LOG_OBJECT (mux,
           "have VP8 video invisible frame, " "ts=%" GST_TIME_FORMAT,
@@ -3659,7 +3658,7 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
   if (is_video_invisible)
     flags |= 0x08;
 
-  if (!strcmp (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)) {
+  if (!g_strcmp0 (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)) {
     cmeta = gst_buffer_get_audio_clipping_meta (buf);
     g_assert (!cmeta || cmeta->format == GST_FORMAT_DEFAULT);
 
@@ -3694,7 +3693,7 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
     if (write_duration)
       gst_ebml_write_uint (ebml, GST_MATROSKA_ID_BLOCKDURATION, block_duration);
 
-    if (!strcmp (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)
+    if (!g_strcmp0 (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)
         && cmeta) {
       /* Start clipping is done via header and CodecDelay */
       if (cmeta->end) {
