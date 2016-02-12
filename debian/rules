@@ -182,7 +182,7 @@ clean::
 	done
 
 common-binary-fixup-arch::
-	dh_gstscancodecs
+	dh_gstscancodecs1.5
 
 DEB_INSTALL_DOCS_ALL += debian/README.Debian NEWS
 
