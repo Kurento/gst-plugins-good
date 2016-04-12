@@ -915,7 +915,7 @@ gst_directsound_sink_set_volume (GstDirectSoundSink * dsoundsink,
      * here, so remap.
      */
     long dsVolume;
-    if (volume == 0)
+    if (volume == 0 || dsoundsink->mute)
       dsVolume = -10000;
     else
       dsVolume = 100 * (long) (20 * log10 ((double) volume / 100.));
@@ -923,7 +923,7 @@ gst_directsound_sink_set_volume (GstDirectSoundSink * dsoundsink,
 
     GST_DEBUG_OBJECT (dsoundsink,
         "Setting volume on secondary buffer to %d from %d", (int) dsVolume,
-        (int) dsoundsink->volume);
+        (int) volume);
     IDirectSoundBuffer_SetVolume (dsoundsink->pDSBSecondary, dsVolume);
   }
 }
@@ -941,7 +941,8 @@ gst_directsound_sink_set_mute (GstDirectSoundSink * dsoundsink, gboolean mute)
     gst_directsound_sink_set_volume (dsoundsink, 0, FALSE);
     dsoundsink->mute = TRUE;
   } else {
-    gst_directsound_sink_set_volume (dsoundsink, dsoundsink->volume, FALSE);
+    gst_directsound_sink_set_volume (dsoundsink,
+        gst_directsound_sink_get_volume (dsoundsink), FALSE);
     dsoundsink->mute = FALSE;
   }
 

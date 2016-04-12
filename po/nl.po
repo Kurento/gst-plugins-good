@@ -1,13 +1,13 @@
 # translation of gst-plugins-good.nl.po to Dutch
 # This file is put in the public domain.
 #
-# Freek de Kruijf <f.de.kruijf@gmail.com>, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015.
+# Freek de Kruijf <f.de.kruijf@gmail.com>, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016.
 msgid ""
 msgstr ""
-"Project-Id-Version: gst-plugins-good 1.6.0\n"
+"Project-Id-Version: gst-plugins-good 1.7.2\n"
 "Report-Msgid-Bugs-To: http://bugzilla.gnome.org/\n"
-"POT-Creation-Date: 2015-12-24 13:17+0100\n"
-"PO-Revision-Date: 2015-10-17 12:36+0200\n"
+"POT-Creation-Date: 2016-03-24 11:27+0200\n"
+"PO-Revision-Date: 2016-02-20 16:40+0100\n"
 "Last-Translator: Freek de Kruijf <f.de.kruijf@gmail.com>\n"
 "Language-Team: Dutch <vertaling@vrijschrift.org>\n"
 "Language: nl\n"
@@ -151,6 +151,12 @@ msgstr ""
 
 msgid "Could not open audio device for recording."
 msgstr "Kan het audio-apparaat niet openen voor opnemen."
+
+msgid "CoreAudio device not found"
+msgstr "CoreAudio apparaat niet gevonden"
+
+msgid "CoreAudio device could not be opened"
+msgstr "CoreAudio apparaat kon niet geopend worden"
 
 msgid "Record Source"
 msgstr "Opnamebron"

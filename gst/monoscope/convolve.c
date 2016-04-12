@@ -17,10 +17,10 @@
  * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
  * Boston, MA 02110-1301, USA.
  *
- * 
+ *
  * Note: 7th December 2004: This file used to be licensed under the GPL,
  *       but we got permission from Ralp Loader to relicense it to LGPL.
- * 
+ *
  *  $Id$
  *
  */
@@ -83,14 +83,13 @@ typedef union stack_entry_s
 }
 stack_entry;
 
-#define STACK_SIZE (CONVOLVE_DEPTH * 3)
-
 struct _struct_convolve_state
 {
-  double left[CONVOLVE_BIG];
-  double right[CONVOLVE_SMALL * 3];
-  double scratch[CONVOLVE_SMALL * 3];
-  stack_entry stack[STACK_SIZE + 1];
+  int depth, small, big, stack_size;
+  double *left;
+  double *right;
+  double *scratch;
+  stack_entry *stack;
 };
 
 /*
@@ -100,9 +99,20 @@ struct _struct_convolve_state
  * The pointer should be freed when it is finished with, by convolve_close().
  */
 convolve_state *
-convolve_init (void)
+convolve_init (int depth)
 {
-  return (convolve_state *) calloc (1, sizeof (convolve_state));
+  convolve_state *state;
+
+  state = malloc (sizeof (convolve_state));
+  state->depth = depth;
+  state->small = (1 << depth);
+  state->big = (2 << depth);
+  state->stack_size = depth * 3;
+  state->left = calloc (state->big, sizeof (double));
+  state->right = calloc (state->small * 3, sizeof (double));
+  state->scratch = calloc (state->small * 3, sizeof (double));
+  state->stack = calloc (state->stack_size + 1, sizeof (stack_entry));
+  return state;
 }
 
 /*
@@ -111,6 +121,10 @@ convolve_init (void)
 void
 convolve_close (convolve_state * state)
 {
+  free (state->left);
+  free (state->right);
+  free (state->scratch);
+  free (state->stack);
   free (state);
 }
 
@@ -248,67 +262,72 @@ convolve_run (stack_entry * top, unsigned size, double *scratch)
   } while (top->b.main != NULL);
 }
 
-int
-convolve_match (const int *lastchoice,
-    const short *input, convolve_state * state)
-/* lastchoice is a 256 sized array.  input is a 512 array.  We find the
- * contiguous length 256 sub-array of input that best matches lastchoice.
- * A measure of how good a sub-array is compared with the lastchoice is
- * given by the sum of the products of each pair of entries.  We maximise
+/*
+ * convolve_match:
+ * @lastchoice: an array of size SMALL.
+ * @input: an array of size BIG (2*SMALL)
+ * @state: a (non-NULL) pointer returned by convolve_init.
+ *
+ * We find the contiguous SMALL-size sub-array of input that best matches
+ * lastchoice. A measure of how good a sub-array is compared with the lastchoice
+ * is given by the sum of the products of each pair of entries.  We maximise
  * that, by taking an appropriate convolution, and then finding the maximum
- * entry in the convolutions.  state is a (non-NULL) pointer returned by
- * convolve_init.  */
+ * entry in the convolutions.
+ *
+ * Return: the position of the best match
+ */
+int
+convolve_match (const int *lastchoice, const short *input,
+    convolve_state * state)
 {
-  double avg;
+  double avg = 0;
   double best;
   int p = 0;
   int i;
   double *left = state->left;
   double *right = state->right;
   double *scratch = state->scratch;
-  stack_entry *top = state->stack + (STACK_SIZE - 1);
+  stack_entry *top = state->stack + (state->stack_size - 1);
 
-#if 1
-  for (i = 0; i < 512; i++)
+  for (i = 0; i < state->big; i++)
     left[i] = input[i];
 
-  avg = 0;
-  for (i = 0; i < 256; i++) {
-    double a = lastchoice[255 - i];
+  for (i = 0; i < state->small; i++) {
+    double a = lastchoice[(state->small - 1) - i];
 
     right[i] = a;
     avg += a;
   }
-#endif
+
   /* We adjust the smaller of the two input arrays to have average
    * value 0.  This makes the eventual result insensitive to both
    * constant offsets and positive multipliers of the inputs. */
-  avg /= 256;
-  for (i = 0; i < 256; i++)
+  avg /= state->small;
+  for (i = 0; i < state->small; i++)
     right[i] -= avg;
   /* End-of-stack marker. */
   top[1].b.null = scratch;
   top[1].b.main = NULL;
-  /* The low 256x256, of which we want the high 256 outputs. */
+  /* The low (small x small) part, of which we want the high outputs. */
   top->v.left = left;
   top->v.right = right;
-  top->v.out = right + 256;
-  convolve_run (top, 256, scratch);
+  top->v.out = right + state->small;
+  convolve_run (top, state->small, scratch);
 
-  /* The high 256x256, of which we want the low 256 outputs. */
-  top->v.left = left + 256;
+  /* The high (small x small) part, of which we want the low outputs. */
+  top->v.left = left + state->small;
   top->v.right = right;
   top->v.out = right;
-  convolve_run (top, 256, scratch);
+  convolve_run (top, state->small, scratch);
 
   /* Now find the best position amoungs this.  Apart from the first
    * and last, the required convolution outputs are formed by adding
    * outputs from the two convolutions above. */
-  best = right[511];
-  right[767] = 0;
+  best = right[state->big - 1];
+  right[state->big + state->small - 1] = 0;
   p = -1;
-  for (i = 0; i < 256; i++) {
-    double a = right[i] + right[i + 512];
+  for (i = 0; i < state->small; i++) {
+    double a = right[i] + right[i + state->big];
 
     if (a > best) {
       best = a;
@@ -320,21 +339,19 @@ convolve_match (const int *lastchoice,
 #if 0
   {
     /* This is some debugging code... */
-    int bad = 0;
-
     best = 0;
-    for (i = 0; i < 256; i++)
+    for (i = 0; i < state->small; i++)
       best += ((double) input[i + p]) * ((double) lastchoice[i] - avg);
 
-    for (i = 0; i < 257; i++) {
+    for (i = 0; i <= state->small; i++) {
       double tot = 0;
       unsigned int j;
 
-      for (j = 0; j < 256; j++)
+      for (j = 0; j < state->small; j++)
         tot += ((double) input[i + j]) * ((double) lastchoice[j] - avg);
       if (tot > best)
         printf ("(%i)", i);
-      if (tot != left[i + 255])
+      if (tot != left[i + (state->small - 1)])
         printf ("!");
     }
 

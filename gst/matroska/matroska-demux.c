@@ -1295,7 +1295,8 @@ gst_matroska_demux_add_stream (GstMatroskaDemux * demux, GstEbmlRead * ebml)
 
   stream_id =
       gst_pad_create_stream_id_printf (context->pad, GST_ELEMENT_CAST (demux),
-      "%03" G_GUINT64_FORMAT, context->uid);
+      "%03" G_GUINT64_FORMAT ":%03" G_GUINT64_FORMAT,
+      context->num, context->uid);
   stream_start =
       gst_pad_get_sticky_event (demux->common.sinkpad, GST_EVENT_STREAM_START,
       0);
@@ -1577,6 +1578,12 @@ gst_matroska_demux_element_send_event (GstElement * element, GstEvent * event)
   g_return_val_if_fail (event != NULL, FALSE);
 
   if (GST_EVENT_TYPE (event) == GST_EVENT_SEEK) {
+    /* no seeking until we are (safely) ready */
+    if (demux->common.state != GST_MATROSKA_READ_STATE_DATA) {
+      GST_DEBUG_OBJECT (demux, "not ready for seeking yet");
+      gst_event_unref (event);
+      return FALSE;
+    }
     res = gst_matroska_demux_handle_seek_event (demux, NULL, event);
   } else {
     GST_WARNING_OBJECT (demux, "Unhandled event of type %s",
@@ -2342,6 +2349,7 @@ gst_matroska_demux_handle_src_event (GstPad * pad, GstObject * parent,
       /* no seeking until we are (safely) ready */
       if (demux->common.state != GST_MATROSKA_READ_STATE_DATA) {
         GST_DEBUG_OBJECT (demux, "not ready for seeking yet");
+        gst_event_unref (event);
         return FALSE;
       }
       if (!demux->streaming)
@@ -2584,6 +2592,7 @@ gst_matroska_ebmlnum_sint (guint8 * data, guint size, gint64 * num)
 static void
 gst_matroska_demux_sync_streams (GstMatroskaDemux * demux)
 {
+  GstClockTime gap_threshold;
   gint stream_nr;
 
   GST_OBJECT_LOCK (demux);
@@ -2601,21 +2610,22 @@ gst_matroska_demux_sync_streams (GstMatroskaDemux * demux)
         "Checking for resync on stream %d (%" GST_TIME_FORMAT ")", stream_nr,
         GST_TIME_ARGS (context->pos));
 
-    if (G_LIKELY (context->type != GST_MATROSKA_TRACK_TYPE_SUBTITLE)) {
-      GST_LOG_OBJECT (demux, "Skipping sync on non-subtitle stream");
-      continue;
-    }
+    /* Only send gap events on non-subtitle streams if lagging way behind.
+     * The 0.5 second threshold for subtitle streams is also quite random. */
+    if (context->type == GST_MATROSKA_TRACK_TYPE_SUBTITLE)
+      gap_threshold = GST_SECOND / 2;
+    else
+      gap_threshold = 3 * GST_SECOND;
 
-    /* does it lag? 0.5 seconds is a random threshold...
-     * lag need only be considered if we have advanced into requested segment */
+    /* Lag need only be considered if we have advanced into requested segment */
     if (GST_CLOCK_TIME_IS_VALID (context->pos) &&
         GST_CLOCK_TIME_IS_VALID (demux->common.segment.position) &&
         demux->common.segment.position > demux->common.segment.start &&
-        context->pos + (GST_SECOND / 2) < demux->common.segment.position) {
+        context->pos + gap_threshold < demux->common.segment.position) {
 
       GstEvent *event;
       guint64 start = context->pos;
-      guint64 stop = demux->common.segment.position - (GST_SECOND / 2);
+      guint64 stop = demux->common.segment.position - gap_threshold;
 
       GST_DEBUG_OBJECT (demux,
           "Synchronizing stream %d with other by advancing time from %"
@@ -2870,6 +2880,7 @@ gst_matroska_demux_add_wvpk_header (GstElement * element,
     GST_WRITE_UINT8 (data + 11, wvh.index_no);
     GST_WRITE_UINT32_LE (data + 12, wvh.total_samples);
     GST_WRITE_UINT32_LE (data + 16, wvh.block_index);
+    gst_buffer_unmap (newbuf, &outmap);
 
     /* Append data from buf: */
     gst_buffer_copy_into (newbuf, *buf, GST_BUFFER_COPY_TIMESTAMPS |
@@ -3534,15 +3545,26 @@ gst_matroska_demux_parse_blockgroup_or_simpleblock (GstMatroskaDemux * demux,
     }
     /* else duration is diff between timecode of this and next block */
 
-    /* For SimpleBlock, look at the keyframe bit in flags. Otherwise,
-       a ReferenceBlock implies that this is not a keyframe. In either
-       case, it only makes sense for video streams. */
     if (stream->type == GST_MATROSKA_TRACK_TYPE_VIDEO) {
+      /* For SimpleBlock, look at the keyframe bit in flags. Otherwise,
+         a ReferenceBlock implies that this is not a keyframe. In either
+         case, it only makes sense for video streams. */
       if ((is_simpleblock && !(flags & 0x80)) || referenceblock) {
         delta_unit = TRUE;
         invisible_frame = ((flags & 0x08)) &&
             (!strcmp (stream->codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP8) ||
             !strcmp (stream->codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP9));
+      }
+
+      /* If we're doing a keyframe-only trickmode, only push keyframes on video
+       * streams */
+      if (delta_unit
+          && demux->common.
+          segment.flags & GST_SEGMENT_FLAG_TRICKMODE_KEY_UNITS) {
+        GST_LOG_OBJECT (demux, "Skipping non-keyframe on stream %d",
+            stream->index);
+        ret = GST_FLOW_OK;
+        goto done;
       }
     }
 
@@ -5599,8 +5621,37 @@ gst_matroska_demux_audio_caps (GstMatroskaTrackAudioContext *
       caps = gst_codec_utils_opus_create_caps_from_header (tmp, NULL);
       gst_buffer_unref (tmp);
       *codec_name = g_strdup ("Opus");
+    } else if (context->codec_priv_size == 0) {
+      GST_WARNING ("No Opus codec data found, trying to create one");
+      if (audiocontext->channels <= 2) {
+        guint8 streams, coupled, channels;
+        guint32 samplerate;
+
+        samplerate =
+            audiocontext->samplerate == 0 ? 48000 : audiocontext->samplerate;
+        channels = audiocontext->channels == 0 ? 2 : audiocontext->channels;
+        if (channels == 1) {
+          streams = 1;
+          coupled = 0;
+        } else {
+          streams = 1;
+          coupled = 1;
+        }
+
+        caps =
+            gst_codec_utils_opus_create_caps (samplerate, channels, 0, streams,
+            coupled, NULL);
+        if (caps) {
+          *codec_name = g_strdup ("Opus");
+        } else {
+          GST_WARNING ("Failed to create Opus caps from audio context");
+        }
+      } else {
+        GST_WARNING ("No Opus codec data, and not enough info to create one");
+      }
     } else {
-      GST_WARNING ("Invalid Opus codec data size");
+      GST_WARNING ("Invalid Opus codec data size (got %" G_GSIZE_FORMAT
+          ", expected 19)", context->codec_priv_size);
     }
   } else if (!strcmp (codec_id, GST_MATROSKA_CODEC_ID_AUDIO_ACM)) {
     gst_riff_strf_auds auds;

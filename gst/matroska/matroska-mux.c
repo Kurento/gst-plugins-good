@@ -53,6 +53,7 @@
 #include <gst/audio/audio.h>
 #include <gst/riff/riff-media.h>
 #include <gst/tag/tag.h>
+#include <gst/pbutils/codec-utils.h>
 
 #include "matroska-mux.h"
 #include "matroska-ids.h"
@@ -250,6 +251,7 @@ static gboolean flac_streamheader_to_codecdata (const GValue * streamheader,
 static void
 gst_matroska_mux_write_simple_tag (const GstTagList * list, const gchar * tag,
     gpointer data);
+static gboolean gst_matroska_mux_tag_list_is_empty (const GstTagList * list);
 static void gst_matroska_mux_write_streams_tags (GstMatroskaMux * mux);
 static gboolean gst_matroska_mux_streams_have_tags (GstMatroskaMux * mux);
 
@@ -595,7 +597,7 @@ gst_matroska_pad_reset (GstMatroskaPad * collect_pad, gboolean full)
 
     context->type = type;
     context->name = name;
-    context->track_uid = gst_matroska_mux_create_uid (collect_pad->mux);
+    context->uid = gst_matroska_mux_create_uid (collect_pad->mux);
     /* TODO: check default values for the context */
     context->flags = GST_MATROSKA_TRACK_ENABLED | GST_MATROSKA_TRACK_DEFAULT;
     collect_pad->track = context;
@@ -1687,40 +1689,46 @@ wrong_content_type:
   }
 }
 
-static const gchar *
-aac_codec_data_to_codec_id (GstBuffer * buf)
+static gboolean
+opus_make_codecdata (GstMatroskaTrackContext * context, GstCaps * caps)
 {
-  const gchar *result;
-  guint8 profile;
+  guint32 rate;
+  guint8 channels;
+  guint8 channel_mapping_family;
+  guint8 stream_count, coupled_count, channel_mapping[256];
+  GstBuffer *buffer;
+  GstMapInfo map;
 
-  /* default to MAIN */
-  profile = 1;
+  /* Opus headers are not in-band */
+  context->xiph_headers_to_skip = 0;
 
-  if (gst_buffer_get_size (buf) >= 2) {
-    gst_buffer_extract (buf, 0, &profile, 1);
-    profile >>= 3;
+  context->codec_delay = 0;
+  context->seek_preroll = 80 * GST_MSECOND;
+
+  if (!gst_codec_utils_opus_parse_caps (caps, &rate, &channels,
+          &channel_mapping_family, &stream_count, &coupled_count,
+          channel_mapping)) {
+    GST_WARNING ("Failed to parse caps for Opus");
+    return FALSE;
   }
 
-  switch (profile) {
-    case 1:
-      result = "MAIN";
-      break;
-    case 2:
-      result = "LC";
-      break;
-    case 3:
-      result = "SSR";
-      break;
-    case 4:
-      result = "LTP";
-      break;
-    default:
-      GST_WARNING ("unknown AAC profile, defaulting to MAIN");
-      result = "MAIN";
-      break;
+  buffer =
+      gst_codec_utils_opus_create_header (rate, channels,
+      channel_mapping_family, stream_count, coupled_count, channel_mapping, 0,
+      0);
+  if (!buffer) {
+    GST_WARNING ("Failed to create Opus header from caps");
+    return FALSE;
   }
 
-  return result;
+  gst_buffer_map (buffer, &map, GST_MAP_READ);
+  context->codec_priv_size = map.size;
+  context->codec_priv = g_malloc (context->codec_priv_size);
+  memcpy (context->codec_priv, map.data, map.size);
+  gst_buffer_unmap (buffer, &map);
+  gst_buffer_unref (buffer);
+
+  return TRUE;
 }
 
 /**
@@ -1840,16 +1848,11 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
         }
 
         if (buf) {
-          if (mpegversion == 2)
-            context->codec_id =
-                g_strdup_printf (GST_MATROSKA_CODEC_ID_AUDIO_AAC_MPEG2 "%s",
-                aac_codec_data_to_codec_id (buf));
-          else if (mpegversion == 4)
-            context->codec_id =
-                g_strdup_printf (GST_MATROSKA_CODEC_ID_AUDIO_AAC_MPEG4 "%s",
-                aac_codec_data_to_codec_id (buf));
-          else
-            g_assert_not_reached ();
+          context->codec_id = g_strdup (GST_MATROSKA_CODEC_ID_AUDIO_AAC);
+          context->codec_priv_size = gst_buffer_get_size (buf);
+          context->codec_priv = g_malloc (context->codec_priv_size);
+          gst_buffer_extract (buf, 0, context->codec_priv,
+              context->codec_priv_size);
         } else {
           GST_DEBUG_OBJECT (mux, "no AAC codec_data; not packetized");
           goto refuse_caps;
@@ -1946,6 +1949,15 @@ gst_matroska_mux_audio_pad_setcaps (GstPad * pad, GstCaps * caps)
     if (streamheader) {
       gst_matroska_mux_free_codec_priv (context);
       if (!opus_streamheader_to_codecdata (streamheader, context)) {
+        GST_ELEMENT_ERROR (mux, STREAM, MUX, (NULL),
+            ("opus stream headers missing or malformed"));
+        goto refuse_caps;
+      }
+    } else {
+      /* no streamheader, but we need to have one, so we make one up
+         based on caps */
+      gst_matroska_mux_free_codec_priv (context);
+      if (!opus_make_codecdata (context, caps)) {
         GST_ELEMENT_ERROR (mux, STREAM, MUX, (NULL),
             ("opus stream headers missing or malformed"));
         goto refuse_caps;
@@ -2428,7 +2440,7 @@ gst_matroska_mux_track_header (GstMatroskaMux * mux,
   gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TRACKNUMBER, context->num);
   gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TRACKTYPE, context->type);
 
-  gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TRACKUID, context->track_uid);
+  gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TRACKUID, context->uid);
   if (context->default_duration) {
     gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TRACKDEFAULTDURATION,
         context->default_duration);
@@ -2779,7 +2791,7 @@ gst_matroska_mux_start (GstMatroskaMux * mux)
 
     /* tags */
     tags = gst_tag_setter_get_tag_list (GST_TAG_SETTER (mux));
-    has_main_tags = tags != NULL && !gst_tag_list_is_empty (tags);
+    has_main_tags = tags != NULL && !gst_matroska_mux_tag_list_is_empty (tags);
 
     if (has_main_tags || gst_matroska_mux_streams_have_tags (mux)) {
       guint64 master_tags, master_tag;
@@ -2946,41 +2958,74 @@ gst_matroska_mux_start (GstMatroskaMux * mux)
 #endif
 }
 
+/* TODO: more sensible tag mappings */
+static const struct
+{
+  const gchar *matroska_tagname;
+  const gchar *gstreamer_tagname;
+}
+gst_matroska_tag_conv[] = {
+  {
+  GST_MATROSKA_TAG_ID_TITLE, GST_TAG_TITLE}, {
+  GST_MATROSKA_TAG_ID_ARTIST, GST_TAG_ARTIST}, {
+  GST_MATROSKA_TAG_ID_ALBUM, GST_TAG_ALBUM}, {
+  GST_MATROSKA_TAG_ID_COMMENTS, GST_TAG_COMMENT}, {
+  GST_MATROSKA_TAG_ID_BITSPS, GST_TAG_BITRATE}, {
+  GST_MATROSKA_TAG_ID_BPS, GST_TAG_BITRATE}, {
+  GST_MATROSKA_TAG_ID_ENCODER, GST_TAG_ENCODER}, {
+  GST_MATROSKA_TAG_ID_DATE, GST_TAG_DATE}, {
+  GST_MATROSKA_TAG_ID_ISRC, GST_TAG_ISRC}, {
+  GST_MATROSKA_TAG_ID_COPYRIGHT, GST_TAG_COPYRIGHT}, {
+  GST_MATROSKA_TAG_ID_BPM, GST_TAG_BEATS_PER_MINUTE}, {
+  GST_MATROSKA_TAG_ID_TERMS_OF_USE, GST_TAG_LICENSE}, {
+  GST_MATROSKA_TAG_ID_COMPOSER, GST_TAG_COMPOSER}, {
+  GST_MATROSKA_TAG_ID_LEAD_PERFORMER, GST_TAG_PERFORMER}, {
+  GST_MATROSKA_TAG_ID_GENRE, GST_TAG_GENRE}
+};
+
+/* Every stagefright implementation on android up to and including 6.0.1 is using
+ libwebm with bug in matroska parsing, where it will choke on empty tag elements;
+ so before outputting tags and tag elements we better make sure that there are
+ actually tags we are going to write */
+static gboolean
+gst_matroska_mux_tag_list_is_empty (const GstTagList * list)
+{
+  int i;
+  for (i = 0; i < gst_tag_list_n_tags (list); i++) {
+    const gchar *tag = gst_tag_list_nth_tag_name (list, i);
+    int i;
+    for (i = 0; i < G_N_ELEMENTS (gst_matroska_tag_conv); i++) {
+      const gchar *tagname_gst = gst_matroska_tag_conv[i].gstreamer_tagname;
+      if (strcmp (tagname_gst, tag) == 0) {
+        GValue src = { 0, };
+        gchar *dest;
+
+        if (!gst_tag_list_copy_value (&src, list, tag))
+          break;
+        dest = gst_value_serialize (&src);
+
+        g_value_unset (&src);
+        if (dest) {
+          g_free (dest);
+          return FALSE;
+        }
+      }
+    }
+  }
+  return TRUE;
+}
+
 static void
 gst_matroska_mux_write_simple_tag (const GstTagList * list, const gchar * tag,
     gpointer data)
 {
-  /* TODO: more sensible tag mappings */
-  static const struct
-  {
-    const gchar *matroska_tagname;
-    const gchar *gstreamer_tagname;
-  }
-  tag_conv[] = {
-    {
-    GST_MATROSKA_TAG_ID_TITLE, GST_TAG_TITLE}, {
-    GST_MATROSKA_TAG_ID_ARTIST, GST_TAG_ARTIST}, {
-    GST_MATROSKA_TAG_ID_ALBUM, GST_TAG_ALBUM}, {
-    GST_MATROSKA_TAG_ID_COMMENTS, GST_TAG_COMMENT}, {
-    GST_MATROSKA_TAG_ID_BITSPS, GST_TAG_BITRATE}, {
-    GST_MATROSKA_TAG_ID_BPS, GST_TAG_BITRATE}, {
-    GST_MATROSKA_TAG_ID_ENCODER, GST_TAG_ENCODER}, {
-    GST_MATROSKA_TAG_ID_DATE, GST_TAG_DATE}, {
-    GST_MATROSKA_TAG_ID_ISRC, GST_TAG_ISRC}, {
-    GST_MATROSKA_TAG_ID_COPYRIGHT, GST_TAG_COPYRIGHT}, {
-    GST_MATROSKA_TAG_ID_BPM, GST_TAG_BEATS_PER_MINUTE}, {
-    GST_MATROSKA_TAG_ID_TERMS_OF_USE, GST_TAG_LICENSE}, {
-    GST_MATROSKA_TAG_ID_COMPOSER, GST_TAG_COMPOSER}, {
-    GST_MATROSKA_TAG_ID_LEAD_PERFORMER, GST_TAG_PERFORMER}, {
-    GST_MATROSKA_TAG_ID_GENRE, GST_TAG_GENRE}
-  };
   GstEbmlWrite *ebml = (GstEbmlWrite *) data;
   guint i;
   guint64 simpletag_master;
 
-  for (i = 0; i < G_N_ELEMENTS (tag_conv); i++) {
-    const gchar *tagname_gst = tag_conv[i].gstreamer_tagname;
-    const gchar *tagname_mkv = tag_conv[i].matroska_tagname;
+  for (i = 0; i < G_N_ELEMENTS (gst_matroska_tag_conv); i++) {
+    const gchar *tagname_gst = gst_matroska_tag_conv[i].gstreamer_tagname;
+    const gchar *tagname_mkv = gst_matroska_tag_conv[i].matroska_tagname;
 
     if (strcmp (tagname_gst, tag) == 0) {
       GValue src = { 0, };
@@ -3013,14 +3058,14 @@ gst_matroska_mux_write_stream_tags (GstMatroskaMux * mux, GstMatroskaPad * mpad)
 
   ebml = mux->ebml_write;
 
-  if (G_UNLIKELY (mpad->tags == NULL || gst_tag_list_is_empty (mpad->tags)))
+  if (G_UNLIKELY (mpad->tags == NULL
+          || gst_matroska_mux_tag_list_is_empty (mpad->tags)))
     return;
 
   master_tag = gst_ebml_write_master_start (ebml, GST_MATROSKA_ID_TAG);
   master_targets = gst_ebml_write_master_start (ebml, GST_MATROSKA_ID_TARGETS);
 
-  gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TARGETTRACKUID,
-      mpad->track->track_uid);
+  gst_ebml_write_uint (ebml, GST_MATROSKA_ID_TARGETTRACKUID, mpad->track->uid);
 
   gst_ebml_write_master_finish (ebml, master_targets);
   gst_tag_list_foreach (mpad->tags, gst_matroska_mux_write_simple_tag, ebml);
@@ -3050,7 +3095,7 @@ gst_matroska_mux_streams_have_tags (GstMatroskaMux * mux)
     GstMatroskaPad *collect_pad;
 
     collect_pad = (GstMatroskaPad *) walk->data;
-    if (!gst_tag_list_is_empty (collect_pad->tags))
+    if (!gst_matroska_mux_tag_list_is_empty (collect_pad->tags))
       return TRUE;
   }
   return FALSE;
@@ -3067,7 +3112,8 @@ gst_matroska_mux_write_toc_entry_tags (GstMatroskaMux * mux,
 
   ebml = mux->ebml_write;
 
-  if (G_UNLIKELY (entry->tags != NULL && !gst_tag_list_is_empty (entry->tags))) {
+  if (G_UNLIKELY (entry->tags != NULL
+          && !gst_matroska_mux_tag_list_is_empty (entry->tags))) {
     if (*master_tags == 0) {
       mux->tags_pos = ebml->pos;
       *master_tags = gst_ebml_write_master_start (ebml, GST_MATROSKA_ID_TAGS);
@@ -3149,7 +3195,7 @@ gst_matroska_mux_finish (GstMatroskaMux * mux)
 
   /* tags */
   tags = gst_tag_setter_get_tag_list (GST_TAG_SETTER (mux));
-  has_main_tags = tags != NULL && !gst_tag_list_is_empty (tags);
+  has_main_tags = tags != NULL && !gst_matroska_mux_tag_list_is_empty (tags);
 
   if (has_main_tags || gst_matroska_mux_streams_have_tags (mux)
       || gst_toc_setter_get_toc (GST_TOC_SETTER (mux)) != NULL) {

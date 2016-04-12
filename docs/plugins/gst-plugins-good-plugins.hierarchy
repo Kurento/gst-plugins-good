@@ -33,7 +33,7 @@ GObject
           GstMuLawEnc
           GstSpeexEnc
           GstWavpackEnc
-        GstAudioVisualizer-BaseExtLibvisual
+        GstAudioVisualizer
           GstGoom
           GstGoom2k1
         GstAviDemux
@@ -185,6 +185,7 @@ GObject
           GstRTPBVDepay
           GstRTPDVDepay
           GstRTPGSMDepay
+          GstRTPOpusDepay
           GstRTPSirenDepay
           GstRTPiLBCDepay
           GstRtpAC3Depay
@@ -200,6 +201,7 @@ GObject
           GstRtpH263Depay
           GstRtpH263PDepay
           GstRtpH264Depay
+          GstRtpH265Depay
           GstRtpJ2KDepay
           GstRtpJPEGDepay
           GstRtpKlvDepay
@@ -222,6 +224,7 @@ GObject
           GstRtpSbcDepay
           GstRtpTheoraDepay
           GstRtpVP8Depay
+          GstRtpVP9Depay
           GstRtpVRawDepay
           GstRtpVorbisDepay
           GstRtpXQTDepay
@@ -250,6 +253,7 @@ GObject
           GstRtpH263PPay
           GstRtpH263Pay
           GstRtpH264Pay
+          GstRtpH265Pay
           GstRtpJ2KPay
           GstRtpJPEGPay
           GstRtpKlvPay
@@ -257,10 +261,12 @@ GObject
           GstRtpMP4GPay
           GstRtpMP4VPay
           GstRtpMPAPay
+          GstRtpOPUSPay
           GstRtpSBCPay
           GstRtpSPEEXPay
           GstRtpTheoraPay
           GstRtpVP8Pay
+          GstRtpVP9Pay
           GstRtpVRawPay
           GstRtpVorbisPay
         GstRTPDec
@@ -323,6 +329,7 @@ GObject
   RTPSession
   SoupSession
 GInterface
+  GDatagramBased
   GIcon
   GInitable
   GLoadableIcon

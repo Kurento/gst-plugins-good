@@ -6,7 +6,7 @@ TEST_FILES_DIRECTORY = $(top_srcdir)/tests/files
 REGISTRY_ENVIRONMENT = \
 	GST_REGISTRY_1_0=$(CHECK_REGISTRY)
 
-AM_TESTS_ENVIRONMENT = \
+AM_TESTS_ENVIRONMENT += \
 	$(REGISTRY_ENVIRONMENT)					\
 	GST_PLUGIN_SYSTEM_PATH_1_0=				\
 	GST_PLUGIN_PATH_1_0=$(top_builddir)/gst:$(top_builddir)/ext:$(top_builddir)/sys:$(GSTPB_PLUGINS_DIR):$(GST_PLUGINS_DIR)			\
@@ -15,7 +15,8 @@ AM_TESTS_ENVIRONMENT = \
 		cacasink cairotextoverlay \
 		halaudiosrc halaudiosink jackaudiosrc jackaudiosink \
 		osssrc osssink osxaudiosink osxaudiosrc osxvideosrc osxvideosink \
-		pulsesink pulsesrc pulsemixer v4l2src"
+		pulsesink pulsesrc pulsemixer v4l2src" \
+	GSETTINGS_BACKEND="memory"
 
 # fake device drivers: we could run hardware element tests against dummy drivers
 # v4l2: vivo (part of normal kernel)

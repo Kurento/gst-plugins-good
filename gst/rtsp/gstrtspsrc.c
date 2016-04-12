@@ -1193,7 +1193,7 @@ gst_rtspsrc_get_property (GObject * object, guint prop_id, GValue * value,
     {
       guint64 timeout;
 
-      timeout = rtspsrc->tcp_timeout.tv_sec * G_USEC_PER_SEC +
+      timeout = ((guint64) rtspsrc->tcp_timeout.tv_sec) * G_USEC_PER_SEC +
           rtspsrc->tcp_timeout.tv_usec;
       g_value_set_uint64 (value, timeout);
       break;
@@ -3545,6 +3545,9 @@ gst_rtspsrc_stream_configure_udp_sinks (GstRTSPSrc * src,
       /* configure socket, we give it the same UDP socket as the udpsrc for RTP
        * so that NAT firewalls will open a hole for us */
       g_object_get (G_OBJECT (stream->udpsrc[0]), "used-socket", &socket, NULL);
+      if (!socket)
+        goto no_socket;
+
       GST_DEBUG_OBJECT (src, "RTP UDP src has sock %p", socket);
       /* configure socket and make sure udpsink does not close it when shutting
        * down, it belongs to udpsrc after all. */
@@ -3600,6 +3603,9 @@ gst_rtspsrc_stream_configure_udp_sinks (GstRTSPSrc * src,
        * because some servers check the port number of where it sends RTCP to identify
        * the RTCP packets it receives */
       g_object_get (G_OBJECT (stream->udpsrc[1]), "used-socket", &socket, NULL);
+      if (!socket)
+        goto no_socket;
+
       GST_DEBUG_OBJECT (src, "RTCP UDP src has sock %p", socket);
       /* configure socket and make sure udpsink does not close it when shutting
        * down, it belongs to udpsrc after all. */
@@ -3637,17 +3643,22 @@ gst_rtspsrc_stream_configure_udp_sinks (GstRTSPSrc * src,
   /* ERRORS */
 no_destination:
   {
-    GST_DEBUG_OBJECT (src, "no destination address specified");
+    GST_ERROR_OBJECT (src, "no destination address specified");
     return FALSE;
   }
 no_sink_element:
   {
-    GST_DEBUG_OBJECT (src, "no UDP sink element found");
+    GST_ERROR_OBJECT (src, "no UDP sink element found");
     return FALSE;
   }
 no_fakesrc_element:
   {
-    GST_DEBUG_OBJECT (src, "no fakesrc element found");
+    GST_ERROR_OBJECT (src, "no fakesrc element found");
+    return FALSE;
+  }
+no_socket:
+  {
+    GST_ERROR_OBJECT (src, "failed to create socket");
     return FALSE;
   }
 }
@@ -4386,7 +4397,11 @@ gst_rtspsrc_handle_data (GstRTSPSrc * src, GstRTSPMessage * message)
                   gst_event_new_caps (caps));
           }
 
-          caps = gst_caps_new_empty_simple ("application/x-rtcp");
+          if (ostream->profile == GST_RTSP_PROFILE_SAVP ||
+              ostream->profile == GST_RTSP_PROFILE_SAVPF)
+            caps = gst_caps_new_empty_simple ("application/x-srtcp");
+          else
+            caps = gst_caps_new_empty_simple ("application/x-rtcp");
 
           if (ostream->udpsrc[1]) {
             gst_element_send_event (ostream->udpsrc[1],
