@@ -425,6 +425,7 @@ gst_v4l2src_get_caps (GstBaseSrc * src, GstCaps * filter)
 static gboolean
 gst_v4l2src_set_format (GstV4l2Src * v4l2src, GstCaps * caps)
 {
+  GstV4l2Error error = GST_V4L2_ERROR_INIT;
   GstV4l2Object *obj;
 
   obj = v4l2src->v4l2object;
@@ -432,9 +433,10 @@ gst_v4l2src_set_format (GstV4l2Src * v4l2src, GstCaps * caps)
   g_signal_emit (v4l2src, gst_v4l2_signals[SIGNAL_PRE_SET_FORMAT], 0,
       v4l2src->v4l2object->video_fd, caps);
 
-  if (!gst_v4l2_object_set_format (obj, caps))
-    /* error already posted */
+  if (!gst_v4l2_object_set_format (obj, caps, &error)) {
+    gst_v4l2_error (v4l2src, &error);
     return FALSE;
+  }
 
   return TRUE;
 }
@@ -453,17 +455,20 @@ gst_v4l2src_set_caps (GstBaseSrc * src, GstCaps * caps)
     return TRUE;
 
   if (GST_V4L2_IS_ACTIVE (obj)) {
+    GstV4l2Error error = GST_V4L2_ERROR_INIT;
     /* Just check if the format is acceptable, once we know
      * no buffers should be outstanding we try S_FMT.
      *
      * Basesrc will do an allocation query that
      * should indirectly reclaim buffers, after that we can
      * set the format and then configure our pool */
-    if (gst_v4l2_object_try_format (obj, caps)) {
+    if (gst_v4l2_object_try_format (obj, caps, &error)) {
       v4l2src->renegotiation_adjust = v4l2src->offset + 1;
       v4l2src->pending_set_fmt = TRUE;
-    } else
+    } else {
+      gst_v4l2_error (v4l2src, &error);
       return FALSE;
+    }
   } else {
     /* make sure we stop capturing and dealloc buffers */
     if (!gst_v4l2_object_stop (obj))
@@ -489,6 +494,34 @@ gst_v4l2src_decide_allocation (GstBaseSrc * bsrc, GstQuery * query)
     ret = gst_v4l2src_set_format (src, caps);
     gst_caps_unref (caps);
     src->pending_set_fmt = FALSE;
+  } else if (gst_buffer_pool_is_active (src->v4l2object->pool)) {
+    /* Trick basesrc into not deactivating the active pool. Renegotiating here
+     * would otherwise turn off and on the camera. */
+    GstAllocator *allocator;
+    GstAllocationParams params;
+    GstBufferPool *pool;
+
+    gst_base_src_get_allocator (bsrc, &allocator, &params);
+    pool = gst_base_src_get_buffer_pool (bsrc);
+
+    if (gst_query_get_n_allocation_params (query))
+      gst_query_set_nth_allocation_param (query, 0, allocator, &params);
+    else
+      gst_query_add_allocation_param (query, allocator, &params);
+
+    if (gst_query_get_n_allocation_pools (query))
+      gst_query_set_nth_allocation_pool (query, 0, pool,
+          src->v4l2object->info.size, 1, 0);
+    else
+      gst_query_add_allocation_pool (query, pool, src->v4l2object->info.size, 1,
+          0);
+
+    if (pool)
+      gst_object_unref (pool);
+    if (allocator)
+      gst_object_unref (allocator);
+
+    return GST_BASE_SRC_CLASS (parent_class)->decide_allocation (bsrc, query);
   }
 
   if (ret) {

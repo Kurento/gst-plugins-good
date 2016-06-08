@@ -1509,6 +1509,11 @@ gst_rtspsrc_collect_payloads (GstRTSPSrc * src, const GstSDPMessage * sdp,
   GST_DEBUG ("mapping sdp media level attributes to caps");
   gst_sdp_media_attributes_to_caps (media, global_caps);
 
+  /* Keep a copy of the SDP key management */
+  gst_sdp_media_parse_keymgmt (media, &stream->mikey);
+  if (stream->mikey == NULL)
+    gst_sdp_message_parse_keymgmt (sdp, &stream->mikey);
+
   len = gst_sdp_media_formats_len (media);
   for (i = 0; i < len; i++) {
     gint pt;
@@ -1618,6 +1623,7 @@ gst_rtspsrc_create_stream (GstRTSPSrc * src, GstSDPMessage * sdp, gint idx)
   stream->send_ssrc = g_random_int ();
   stream->profile = GST_RTSP_PROFILE_AVP;
   stream->ptmap = g_array_new (FALSE, FALSE, sizeof (PtMapItem));
+  stream->mikey = NULL;
   g_array_set_clear_func (stream->ptmap, (GDestroyNotify) clear_ptmap_item);
 
   /* collect bandwidth information for this steam. FIXME, configure in the RTP
@@ -1727,6 +1733,8 @@ gst_rtspsrc_stream_free (GstRTSPSrc * src, GstRTSPStream * stream)
     gst_object_unref (stream->srtpdec);
   if (stream->srtcpparams)
     gst_caps_unref (stream->srtcpparams);
+  if (stream->mikey)
+    gst_mikey_message_unref (stream->mikey);
   if (stream->rtcppad)
     gst_object_unref (stream->rtcppad);
   if (stream->session)
@@ -2733,8 +2741,27 @@ set_manager_buffer_mode (GstRTSPSrc * src)
 static GstCaps *
 request_key (GstElement * srtpdec, guint ssrc, GstRTSPStream * stream)
 {
-  GST_DEBUG ("request key %u", ssrc);
-  return gst_caps_ref (stream_get_caps_for_pt (stream, stream->default_pt));
+  guint i;
+  GstCaps *caps;
+  GstMIKEYMessage *msg = stream->mikey;
+
+  GST_DEBUG ("request key SSRC %u", ssrc);
+
+  caps = gst_caps_ref (stream_get_caps_for_pt (stream, stream->default_pt));
+  caps = gst_caps_make_writable (caps);
+
+  /* parse crypto sessions and look for the SSRC rollover counter */
+  msg = stream->mikey;
+  for (i = 0; msg && i < gst_mikey_message_get_n_cs (msg); i++) {
+    const GstMIKEYMapSRTP *map = gst_mikey_message_get_cs_srtp (msg, i);
+
+    if (ssrc == map->ssrc) {
+      gst_caps_set_simple (caps, "roc", G_TYPE_UINT, map->roc, NULL);
+      break;
+    }
+  }
+
+  return caps;
 }
 
 static GstElement *
@@ -3903,8 +3930,10 @@ gst_rtspsrc_configure_caps (GstRTSPSrc * src, GstSegment * segment,
       GST_DEBUG_OBJECT (src, "stream %p, pt %d, caps %" GST_PTR_FORMAT, stream,
           item->pt, caps);
 
-      if (item->pt == stream->default_pt && stream->udpsrc[0]) {
-        g_object_set (stream->udpsrc[0], "caps", caps, NULL);
+      if (item->pt == stream->default_pt) {
+        if (stream->udpsrc[0])
+          g_object_set (stream->udpsrc[0], "caps", caps, NULL);
+        stream->need_caps = TRUE;
       }
     }
   }
@@ -4396,6 +4425,7 @@ gst_rtspsrc_handle_data (GstRTSPSrc * src, GstRTSPMessage * message)
               gst_pad_send_event (ostream->channelpad[0],
                   gst_event_new_caps (caps));
           }
+          ostream->need_caps = FALSE;
 
           if (ostream->profile == GST_RTSP_PROFILE_SAVP ||
               ostream->profile == GST_RTSP_PROFILE_SAVPF)
@@ -4457,6 +4487,28 @@ gst_rtspsrc_handle_data (GstRTSPSrc * src, GstRTSPMessage * message)
     src->need_segment = FALSE;
     gst_segment_init (&segment, GST_FORMAT_TIME);
     gst_rtspsrc_push_event (src, gst_event_new_segment (&segment));
+  }
+
+  if (stream->need_caps) {
+    GstCaps *caps;
+
+    if ((caps = stream_get_caps_for_pt (stream, stream->default_pt))) {
+      /* only streams that have a connection to the outside world */
+      if (stream->setup) {
+        /* Only need to update the TCP caps here, UDP is already handled */
+        if (stream->channelpad[0]) {
+          if (GST_PAD_IS_SRC (stream->channelpad[0]))
+            gst_pad_push_event (stream->channelpad[0],
+                gst_event_new_caps (caps));
+          else
+            gst_pad_send_event (stream->channelpad[0],
+                gst_event_new_caps (caps));
+        }
+        stream->need_caps = FALSE;
+      }
+    }
+
+    stream->need_caps = FALSE;
   }
 
   if (stream->discont && !is_rtcp) {
@@ -7112,7 +7164,10 @@ clear_rtp_base (GstRTSPSrc * src, GstRTSPStream * stream)
     item->caps = gst_caps_make_writable (item->caps);
     s = gst_caps_get_structure (item->caps, 0);
     gst_structure_remove_fields (s, "clock-base", "seqnum-base", NULL);
+    if (item->pt == stream->default_pt && stream->udpsrc[0])
+      g_object_set (stream->udpsrc[0], "caps", item->caps, NULL);
   }
+  stream->need_caps = TRUE;
 }
 
 static GstRTSPResult
@@ -7745,6 +7800,16 @@ gst_rtspsrc_change_state (GstElement * element, GstStateChange transition)
       ret = GST_STATE_CHANGE_SUCCESS;
       break;
     default:
+      /* Otherwise it's success, we don't want to return spurious
+       * NO_PREROLL or ASYNC from internal elements as we care for
+       * state changes ourselves here
+       *
+       * This is to catch PAUSED->PAUSED and PLAYING->PLAYING transitions.
+       */
+      if (GST_STATE_TRANSITION_NEXT (transition) == GST_STATE_PAUSED)
+        ret = GST_STATE_CHANGE_NO_PREROLL;
+      else
+        ret = GST_STATE_CHANGE_SUCCESS;
       break;
   }
 

@@ -195,6 +195,7 @@ static gboolean
 gst_v4l2_transform_set_caps (GstBaseTransform * trans, GstCaps * incaps,
     GstCaps * outcaps)
 {
+  GstV4l2Error error = GST_V4L2_ERROR_INIT;
   GstV4l2Transform *self = GST_V4L2_TRANSFORM (trans);
 
   if (self->incaps && self->outcaps) {
@@ -212,10 +213,10 @@ gst_v4l2_transform_set_caps (GstBaseTransform * trans, GstCaps * incaps,
   gst_caps_replace (&self->incaps, incaps);
   gst_caps_replace (&self->outcaps, outcaps);
 
-  if (!gst_v4l2_object_set_format (self->v4l2output, incaps))
+  if (!gst_v4l2_object_set_format (self->v4l2output, incaps, &error))
     goto incaps_failed;
 
-  if (!gst_v4l2_object_set_format (self->v4l2capture, outcaps))
+  if (!gst_v4l2_object_set_format (self->v4l2capture, outcaps, &error))
     goto outcaps_failed;
 
   /* FIXME implement fallback if crop not supported */
@@ -231,6 +232,7 @@ incaps_failed:
   {
     GST_ERROR_OBJECT (self, "failed to set input caps: %" GST_PTR_FORMAT,
         incaps);
+    gst_v4l2_error (self, &error);
     goto failed;
   }
 outcaps_failed:
@@ -238,6 +240,7 @@ outcaps_failed:
     gst_v4l2_object_stop (self->v4l2output);
     GST_ERROR_OBJECT (self, "failed to set output caps: %" GST_PTR_FORMAT,
         outcaps);
+    gst_v4l2_error (self, &error);
     goto failed;
   }
 failed:
@@ -375,7 +378,7 @@ gst_v4l2_transform_caps_remove_format_info (GstCaps * caps)
         && gst_caps_features_is_equal (f,
             GST_CAPS_FEATURES_MEMORY_SYSTEM_MEMORY))
       gst_structure_remove_fields (st, "format", "colorimetry", "chroma-site",
-          "width", "height", NULL);
+          "width", "height", "pixel-aspect-ratio", NULL);
 
     gst_caps_append_structure_full (res, st, gst_caps_features_copy (f));
   }
@@ -427,6 +430,17 @@ gst_v4l2_transform_fixate_caps (GstBaseTransform * trans,
 
   ins = gst_caps_get_structure (caps, 0);
   outs = gst_caps_get_structure (othercaps, 0);
+
+  {
+    const gchar *in_format;
+
+    in_format = gst_structure_get_string (ins, "format");
+    if (in_format) {
+      /* Try to set output format for pass through */
+      gst_structure_fixate_field_string (outs, "format", in_format);
+    }
+
+  }
 
   from_par = gst_structure_get_value (ins, "pixel-aspect-ratio");
   to_par = gst_structure_get_value (outs, "pixel-aspect-ratio");
@@ -687,9 +701,11 @@ gst_v4l2_transform_fixate_caps (GstBaseTransform * trans,
       to_par_n = gst_value_get_fraction_numerator (to_par);
       to_par_d = gst_value_get_fraction_denominator (to_par);
 
+      GST_DEBUG_OBJECT (trans, "PAR is fixed %d/%d", to_par_n, to_par_d);
+
       /* Calculate scale factor for the PAR change */
-      if (!gst_util_fraction_multiply (from_dar_n, from_dar_d, to_par_n,
-              to_par_d, &num, &den)) {
+      if (!gst_util_fraction_multiply (from_dar_n, from_dar_d, to_par_d,
+              to_par_n, &num, &den)) {
         GST_ELEMENT_ERROR (trans, CORE, NEGOTIATION, (NULL),
             ("Error calculating the output scaled size - integer overflow"));
         goto done;
@@ -844,6 +860,9 @@ done:
     g_value_unset (&fpar);
   if (to_par == &tpar)
     g_value_unset (&tpar);
+
+  /* fixate remaining fields */
+  othercaps = gst_caps_fixate (othercaps);
 
   return othercaps;
 }

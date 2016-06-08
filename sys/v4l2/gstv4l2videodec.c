@@ -229,6 +229,7 @@ static gboolean
 gst_v4l2_video_dec_set_format (GstVideoDecoder * decoder,
     GstVideoCodecState * state)
 {
+  GstV4l2Error error = GST_V4L2_ERROR_INIT;
   gboolean ret = TRUE;
   GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
 
@@ -245,10 +246,12 @@ gst_v4l2_video_dec_set_format (GstVideoDecoder * decoder,
     /* FIXME we probably need to do more work if pools are active */
   }
 
-  ret = gst_v4l2_object_set_format (self->v4l2output, state->caps);
+  ret = gst_v4l2_object_set_format (self->v4l2output, state->caps, &error);
 
   if (ret)
     self->input_state = gst_video_codec_state_ref (state);
+  else
+    gst_v4l2_error (self, &error);
 
 done:
   return ret;
@@ -293,6 +296,37 @@ gst_v4l2_video_dec_negotiate (GstVideoDecoder * decoder)
   return GST_VIDEO_DECODER_CLASS (parent_class)->negotiate (decoder);
 }
 
+static gboolean
+gst_v4l2_decoder_cmd (GstV4l2Object * v4l2object, guint cmd, guint flags)
+{
+  struct v4l2_decoder_cmd dcmd = { 0, };
+
+  GST_DEBUG_OBJECT (v4l2object->element,
+      "sending v4l2 decoder command %u with flags %u", cmd, flags);
+
+  if (!GST_V4L2_IS_OPEN (v4l2object))
+    return FALSE;
+
+  dcmd.cmd = cmd;
+  dcmd.flags = flags;
+  if (v4l2_ioctl (v4l2object->video_fd, VIDIOC_DECODER_CMD, &dcmd) < 0)
+    goto dcmd_failed;
+
+  return TRUE;
+
+dcmd_failed:
+  if (errno == ENOTTY) {
+    GST_INFO_OBJECT (v4l2object->element,
+        "Failed to send decoder command %u with flags %u for '%s'. (%s)",
+        cmd, flags, v4l2object->videodev, g_strerror (errno));
+  } else {
+    GST_ERROR_OBJECT (v4l2object->element,
+        "Failed to send decoder command %u with flags %u for '%s'. (%s)",
+        cmd, flags, v4l2object->videodev, g_strerror (errno));
+  }
+  return FALSE;
+}
+
 static GstFlowReturn
 gst_v4l2_video_dec_finish (GstVideoDecoder * decoder)
 {
@@ -305,15 +339,28 @@ gst_v4l2_video_dec_finish (GstVideoDecoder * decoder)
 
   GST_DEBUG_OBJECT (self, "Finishing decoding");
 
-  /* Keep queuing empty buffers until the processing thread has stopped,
-   * _pool_process() will return FLUSHING when that happened */
   GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
-  while (ret == GST_FLOW_OK) {
-    buffer = gst_buffer_new ();
-    ret =
-        gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (self->
-            v4l2output->pool), &buffer);
-    gst_buffer_unref (buffer);
+
+  if (gst_v4l2_decoder_cmd (self->v4l2output, V4L2_DEC_CMD_STOP, 0)) {
+    GstTask *task = decoder->srcpad->task;
+
+    /* If the decoder stop command succeeded, just wait until processing is
+     * finished */
+    GST_OBJECT_LOCK (task);
+    while (GST_TASK_STATE (task) == GST_TASK_STARTED)
+      GST_TASK_WAIT (task);
+    GST_OBJECT_UNLOCK (task);
+    ret = GST_FLOW_FLUSHING;
+  } else {
+    /* otherwise keep queuing empty buffers until the processing thread has
+     * stopped, _pool_process() will return FLUSHING when that happened */
+    while (ret == GST_FLOW_OK) {
+      buffer = gst_buffer_new ();
+      ret =
+          gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (self->
+              v4l2output->pool), &buffer);
+      gst_buffer_unref (buffer);
+    }
   }
 
   /* and ensure the processing thread has stopped in case another error
@@ -441,12 +488,42 @@ gst_v4l2_video_dec_loop_stopped (GstV4l2VideoDec * self)
       gst_flow_get_name (self->output_flow));
 }
 
+static gboolean
+gst_v4l2_video_remove_padding(GstCapsFeatures * features,
+    GstStructure * structure, gpointer user_data)
+{
+  GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (user_data);
+  GstVideoAlignment *align = &self->v4l2capture->align;
+  GstVideoInfo *info = &self->v4l2capture->info;
+  int width, height;
+
+  if (!gst_structure_get_int(structure, "width", &width))
+    return TRUE;
+
+  if (!gst_structure_get_int(structure, "height", &height))
+    return TRUE;
+
+  if (align->padding_left != 0 || align->padding_top != 0 ||
+      width != info->width + align->padding_right ||
+      height != info->height + align->padding_bottom)
+    return TRUE;
+
+  gst_structure_set(structure,
+      "width", G_TYPE_INT, width - align->padding_right,
+      "height", G_TYPE_INT, height - align->padding_bottom, NULL);
+
+  return TRUE;
+}
+
 static GstFlowReturn
 gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     GstVideoCodecFrame * frame)
 {
+  GstV4l2Error error = GST_V4L2_ERROR_INIT;
   GstV4l2VideoDec *self = GST_V4L2_VIDEO_DEC (decoder);
   GstFlowReturn ret = GST_FLOW_OK;
+  gboolean processed = FALSE;
+  GstBuffer *tmp;
 
   GST_DEBUG_OBJECT (self, "Handling frame %d", frame->system_frame_number);
 
@@ -456,7 +533,8 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
   if (G_UNLIKELY (!GST_V4L2_IS_ACTIVE (self->v4l2output))) {
     if (!self->input_state)
       goto not_negotiated;
-    if (!gst_v4l2_object_set_format (self->v4l2output, self->input_state->caps))
+    if (!gst_v4l2_object_set_format (self->v4l2output, self->input_state->caps,
+          &error))
       goto not_negotiated;
   }
 
@@ -465,7 +543,7 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     GstVideoInfo info;
     GstVideoCodecState *output_state;
     GstBuffer *codec_data;
-    GstCaps *acquired_caps, *caps, *filter;
+    GstCaps *acquired_caps, *available_caps, *caps, *filter;
     GstStructure *st;
 
     GST_DEBUG_OBJECT (self, "Sending header");
@@ -479,8 +557,8 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     if (codec_data) {
       gst_buffer_ref (codec_data);
     } else {
-      codec_data = frame->input_buffer;
-      frame->input_buffer = NULL;
+      codec_data = gst_buffer_ref (frame->input_buffer);
+      processed = TRUE;
     }
 
     /* Ensure input internal pool is active */
@@ -505,6 +583,10 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
 
     gst_buffer_unref (codec_data);
 
+    /* For decoders G_FMT returns coded size, G_SELECTION returns visible size
+     * in the compose rectangle. gst_v4l2_object_acquire_format() checks both
+     * and returns the visible size as with/height and the coded size as
+     * padding. */
     if (!gst_v4l2_object_acquire_format (self->v4l2capture, &info))
       goto not_negotiated;
 
@@ -514,8 +596,17 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     gst_structure_remove_field (st, "format");
 
     /* Probe currently available pixel formats */
-    filter = gst_v4l2_object_probe_caps (self->v4l2capture, acquired_caps);
+    available_caps = gst_v4l2_object_probe_caps (self->v4l2capture, NULL);
+    available_caps = gst_caps_make_writable (available_caps);
+
+    /* Replace coded size with visible size, we want to negotiate visible size
+     * with downstream, not coded size. */
+    gst_caps_map_in_place (available_caps, gst_v4l2_video_remove_padding, self);
+
+    filter = gst_caps_intersect_full (available_caps, acquired_caps,
+        GST_CAPS_INTERSECT_FIRST);
     gst_caps_unref (acquired_caps);
+    gst_caps_unref (available_caps);
     caps = gst_pad_peer_query_caps (decoder->srcpad, filter);
     gst_caps_unref (filter);
 
@@ -531,8 +622,10 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     GST_DEBUG_OBJECT (self, "Chosen decoded caps: %" GST_PTR_FORMAT, caps);
 
     /* Try to set negotiated format, on success replace acquired format */
-    if (gst_v4l2_object_set_format (self->v4l2capture, caps))
+    if (gst_v4l2_object_set_format (self->v4l2capture, caps, &error))
       gst_video_info_from_caps (&info, caps);
+    else
+      gst_v4l2_clear_error (&error);
     gst_caps_unref (caps);
 
     output_state = gst_video_decoder_set_output_state (decoder,
@@ -575,7 +668,7 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
       goto start_task_failed;
   }
 
-  if (frame->input_buffer) {
+  if (!processed) {
     GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
     ret =
         gst_v4l2_buffer_pool_process (GST_V4L2_BUFFER_POOL (self->v4l2output->
@@ -589,10 +682,15 @@ gst_v4l2_video_dec_handle_frame (GstVideoDecoder * decoder,
     } else if (ret != GST_FLOW_OK) {
       goto process_failed;
     }
-
-    /* No need to keep input arround */
-    gst_buffer_replace (&frame->input_buffer, NULL);
   }
+
+  /* No need to keep input arround */
+  tmp = frame->input_buffer;
+  frame->input_buffer = gst_buffer_new ();
+  gst_buffer_copy_into (frame->input_buffer, tmp,
+      GST_BUFFER_COPY_FLAGS | GST_BUFFER_COPY_TIMESTAMPS |
+      GST_BUFFER_COPY_META, 0, 0);
+  gst_buffer_unref (tmp);
 
   gst_video_codec_frame_unref (frame);
   return ret;
@@ -602,6 +700,7 @@ not_negotiated:
   {
     GST_ERROR_OBJECT (self, "not negotiated");
     ret = GST_FLOW_NOT_NEGOTIATED;
+    gst_v4l2_error (self, &error);
     goto drop;
   }
 activate_failed:

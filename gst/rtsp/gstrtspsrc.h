@@ -103,6 +103,7 @@ struct _GstRTSPStream {
   gboolean      skipped;
   gboolean      eos;
   gboolean      discont;
+  gboolean      need_caps;
 
   /* for interleaved mode */
   guint8        channel[2];
@@ -143,6 +144,9 @@ struct _GstRTSPStream {
 
   /* session */
   GObject      *session;
+
+  /* srtp key management */
+  GstMIKEYMessage *mikey;
 
   /* bandwidth */
   guint         as_bandwidth;

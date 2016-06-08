@@ -1227,11 +1227,12 @@ gst_rtp_jitter_buffer_getcaps (GstPad * pad, GstCaps * filter)
 
 static gboolean
 gst_jitter_buffer_sink_parse_caps (GstRtpJitterBuffer * jitterbuffer,
-    GstCaps * caps)
+    GstCaps * caps, gint pt)
 {
   GstRtpJitterBufferPrivate *priv;
   GstStructure *caps_struct;
   guint val;
+  gint payload = -1;
   GstClockTime tval;
 
   priv = jitterbuffer->priv;
@@ -1239,7 +1240,19 @@ gst_jitter_buffer_sink_parse_caps (GstRtpJitterBuffer * jitterbuffer,
   /* first parse the caps */
   caps_struct = gst_caps_get_structure (caps, 0);
 
-  GST_DEBUG_OBJECT (jitterbuffer, "got caps");
+  GST_DEBUG_OBJECT (jitterbuffer, "got caps %" GST_PTR_FORMAT, caps);
+
+  if (gst_structure_get_int (caps_struct, "payload", &payload) && pt != -1
+      && payload != pt) {
+    GST_ERROR_OBJECT (jitterbuffer,
+        "Got caps with wrong payload type (got %d, expected %d)", payload, pt);
+    return FALSE;
+  }
+
+  if (payload != -1) {
+    GST_DEBUG_OBJECT (jitterbuffer, "Got payload type %d", payload);
+    priv->last_pt = payload;
+  }
 
   /* we need a clock-rate to convert the rtp timestamps to GStreamer time and to
    * measure the amount of data in the buffer */
@@ -1542,7 +1555,7 @@ queue_event (GstRtpJitterBuffer * jitterbuffer, GstEvent * event)
       GstCaps *caps;
 
       gst_event_parse_caps (event, &caps);
-      gst_jitter_buffer_sink_parse_caps (jitterbuffer, caps);
+      gst_jitter_buffer_sink_parse_caps (jitterbuffer, caps, -1);
       break;
     }
     case GST_EVENT_SEGMENT:
@@ -1714,7 +1727,7 @@ gst_rtp_jitter_buffer_get_clock_rate (GstRtpJitterBuffer * jitterbuffer,
   if (!caps)
     goto no_caps;
 
-  res = gst_jitter_buffer_sink_parse_caps (jitterbuffer, caps);
+  res = gst_jitter_buffer_sink_parse_caps (jitterbuffer, caps, pt);
   gst_caps_unref (caps);
 
   if (G_UNLIKELY (!res))
@@ -1982,6 +1995,30 @@ get_rtx_delay (GstRtpJitterBufferPrivate * priv)
   return delay;
 }
 
+/* Check if packet with seqnum is already considered definitely lost by being
+ * part of a "lost timer" for multiple packets */
+static gboolean
+already_lost (GstRtpJitterBuffer * jitterbuffer, guint16 seqnum)
+{
+  GstRtpJitterBufferPrivate *priv = jitterbuffer->priv;
+  gint i, len;
+
+  len = priv->timers->len;
+  for (i = 0; i < len; i++) {
+    TimerData *test = &g_array_index (priv->timers, TimerData, i);
+    gint gap = gst_rtp_buffer_compare_seqnum (test->seqnum, seqnum);
+
+    if (test->num > 1 && test->type == TIMER_TYPE_LOST && gap >= 0 &&
+        gap < test->num) {
+      GST_DEBUG ("seqnum #%d already considered definitely lost (#%d->#%d)",
+          seqnum, test->seqnum, (test->seqnum + test->num - 1) & 0xffff);
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
 /* we just received a packet with seqnum and dts.
  *
  * First check for old seqnum that we are still expecting. If the gap with the
@@ -2188,7 +2225,7 @@ calculate_expected (GstRtpJitterBuffer * jitterbuffer, guint32 expected,
     GST_DEBUG_OBJECT (jitterbuffer,
         "lost packets (%d, #%d->#%d) duration too large %" GST_TIME_FORMAT
         " > %" GST_TIME_FORMAT ", consider %u lost (%" GST_TIME_FORMAT ")",
-        gap, expected, seqnum, GST_TIME_ARGS (total_duration),
+        gap, expected, seqnum - 1, GST_TIME_ARGS (total_duration),
         GST_TIME_ARGS (priv->latency_ns), lost_packets,
         GST_TIME_ARGS (gap_time));
 
@@ -2481,7 +2518,7 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
     /* Try to get the clock-rate from the caps first if we can. If there are no
      * caps we must fire the signal to get the clock-rate. */
     if ((caps = gst_pad_get_current_caps (pad))) {
-      gst_jitter_buffer_sink_parse_caps (jitterbuffer, caps);
+      gst_jitter_buffer_sink_parse_caps (jitterbuffer, caps, pt);
       gst_caps_unref (caps);
     }
   }
@@ -2700,6 +2737,9 @@ gst_rtp_jitter_buffer_chain (GstPad * pad, GstObject * parent,
       goto too_late;
   }
 
+  if (already_lost (jitterbuffer, seqnum))
+    goto already_lost;
+
   /* let's drop oldest packet if the queue is already full and drop-on-latency
    * is set. We can only do this when there actually is a latency. When no
    * latency is set, we just pump it in the queue and let the other end push it
@@ -2812,6 +2852,14 @@ too_late:
   {
     GST_DEBUG_OBJECT (jitterbuffer, "Packet #%d too late as #%d was already"
         " popped, dropping", seqnum, priv->last_popped_seqnum);
+    priv->num_late++;
+    gst_buffer_unref (buffer);
+    goto finished;
+  }
+already_lost:
+  {
+    GST_DEBUG_OBJECT (jitterbuffer, "Packet #%d too late as it was already "
+        "considered lost", seqnum);
     priv->num_late++;
     gst_buffer_unref (buffer);
     goto finished;

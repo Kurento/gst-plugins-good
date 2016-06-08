@@ -726,6 +726,7 @@ rtp_session_create_stats (RTPSession * sess)
   GValue source_stats_v = G_VALUE_INIT;
   guint size;
 
+  RTP_SESSION_LOCK (sess);
   s = gst_structure_new ("application/x-rtp-session-stats",
       "rtx-drop-count", G_TYPE_UINT, sess->stats.nacks_dropped,
       "sent-nack-count", G_TYPE_UINT, sess->stats.nacks_sent,
@@ -735,6 +736,7 @@ rtp_session_create_stats (RTPSession * sess)
   source_stats = g_value_array_new (size);
   g_hash_table_foreach (sess->ssrcs[sess->mask_idx],
       (GHFunc) create_source_stats, source_stats);
+  RTP_SESSION_UNLOCK (sess);
 
   g_value_init (&source_stats_v, G_TYPE_VALUE_ARRAY);
   g_value_take_boxed (&source_stats_v, source_stats);
@@ -2423,21 +2425,18 @@ rtp_session_process_bye (RTPSession * sess, GstRTCPPacket * packet,
   for (i = 0; i < count; i++) {
     guint32 ssrc;
     RTPSource *source;
-    gboolean created, prevactive, prevsender;
+    gboolean prevactive, prevsender;
     guint pmembers, members;
 
     ssrc = gst_rtcp_packet_bye_get_nth_ssrc (packet, i);
     GST_DEBUG ("SSRC: %08x", ssrc);
 
     /* find src and mark bye, no probation when dealing with RTCP */
-    source = obtain_source (sess, ssrc, &created, pinfo, FALSE);
-    if (!source)
-      return;
-
-    if (source->internal) {
-      /* our own source, something weird with this packet */
-      g_object_unref (source);
-      continue;
+    source = find_source (sess, ssrc);
+    if (!source || source->internal) {
+      GST_DEBUG ("Ignoring suspicious BYE packet (reason: %s)",
+          !source ? "can't find source" : "has internal source SSRC");
+      break;
     }
 
     /* store time for when we need to time out this source */
@@ -2495,12 +2494,7 @@ rtp_session_process_bye (RTPSession * sess, GstRTCPPacket * packet,
       }
     }
 
-    if (created)
-      on_new_ssrc (sess, source);
-
     on_bye_ssrc (sess, source);
-
-    g_object_unref (source);
   }
   if (reconsider) {
     RTP_SESSION_UNLOCK (sess);
@@ -2509,6 +2503,7 @@ rtp_session_process_bye (RTPSession * sess, GstRTCPPacket * packet,
       sess->callbacks.reconsider (sess, sess->reconsider_user_data);
     RTP_SESSION_LOCK (sess);
   }
+
   g_free (reason);
 }
 
@@ -3982,9 +3977,6 @@ rtp_session_on_timeout (RTPSession * sess, GstClockTime current_time,
   /* update point-to-point status */
   session_update_ptp (sess);
 
-  /* notify about updated statistics */
-  g_object_notify (G_OBJECT (sess), "stats");
-
   /* see if we need to generate SR or RR packets */
   if (!is_rtcp_time (sess, current_time, &data))
     goto done;
@@ -4023,6 +4015,9 @@ rtp_session_on_timeout (RTPSession * sess, GstClockTime current_time,
 
 done:
   RTP_SESSION_UNLOCK (sess);
+
+  /* notify about updated statistics */
+  g_object_notify (G_OBJECT (sess), "stats");
 
   /* push out the RTCP packets */
   while ((output = g_queue_pop_head (&data.output))) {

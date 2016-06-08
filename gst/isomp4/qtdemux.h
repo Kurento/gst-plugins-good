@@ -89,7 +89,6 @@ struct _GstQTDemux {
   gboolean posted_redirect;
 
   /* push based variables */
-  gboolean pending_configure;
   guint neededbytes;
   guint todrop;
   GstAdapter *adapter;
@@ -118,6 +117,7 @@ struct _GstQTDemux {
   /* configured playback region */
   GstSegment segment;
   GstEvent *pending_newsegment;
+  guint32 segment_seqnum;
   gboolean upstream_format_is_time; /* qtdemux received upstream
                                      * newsegment in TIME format which likely
                                      * means that upstream is driving the pipeline
