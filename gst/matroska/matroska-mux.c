@@ -3561,8 +3561,7 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
     return GST_FLOW_OK;
   }
 
-  if (!g_strcmp0 (collect_pad->track->codec_id,
-          GST_MATROSKA_CODEC_ID_AUDIO_OPUS)
+  if (!strcmp (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_AUDIO_OPUS)
       && collect_pad->track->codec_delay) {
     /* All timestamps should include the codec delay */
     if (buffer_timestamp > collect_pad->track->codec_delay) {
@@ -3582,8 +3581,7 @@ gst_matroska_mux_write_data (GstMatroskaMux * mux, GstMatroskaPad * collect_pad,
           GST_TIME_ARGS (buffer_timestamp));
       is_video_keyframe = TRUE;
     } else if (GST_BUFFER_FLAG_IS_SET (buf, GST_BUFFER_FLAG_DECODE_ONLY) &&
-        (!g_strcmp0 (collect_pad->track->codec_id,
-                GST_MATROSKA_CODEC_ID_VIDEO_VP8)
+        (!strcmp (collect_pad->track->codec_id, GST_MATROSKA_CODEC_ID_VIDEO_VP8)
             || !strcmp (collect_pad->track->codec_id,
                 GST_MATROSKA_CODEC_ID_VIDEO_VP9))) {
       GST_LOG_OBJECT (mux,
