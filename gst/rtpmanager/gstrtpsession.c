@@ -228,6 +228,7 @@ enum
 #define DEFAULT_RTP_PROFILE          GST_RTP_PROFILE_AVP
 #define DEFAULT_NTP_TIME_SOURCE      GST_RTP_NTP_TIME_SOURCE_NTP
 #define DEFAULT_RTCP_SYNC_SEND_TIME  TRUE
+#define DEFAULT_ALLOW_RTCP_EOS  TRUE
 
 enum
 {
@@ -248,7 +249,8 @@ enum
   PROP_STATS,
   PROP_RTP_PROFILE,
   PROP_NTP_TIME_SOURCE,
-  PROP_RTCP_SYNC_SEND_TIME
+  PROP_RTCP_SYNC_SEND_TIME,
+  PROP_ALLOW_RTCP_EOS
 };
 
 #define GST_RTP_SESSION_GET_PRIVATE(obj)  \
@@ -285,6 +287,8 @@ struct _GstRtpSessionPrivate
   gboolean rtcp_sync_send_time;
 
   guint rtx_count;
+
+  gboolean allow_rtcp_eos;
 };
 
 /* callbacks to handle actions from the session manager */
@@ -763,6 +767,18 @@ gst_rtp_session_class_init (GstRtpSessionClass * klass)
           DEFAULT_RTCP_SYNC_SEND_TIME,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  /**
+   * GstRtpSession::allow-rtcp-eos:
+   *
+   * Allow sending EOS on RTCP pad when a bye package is sent.
+   *
+   * Since: 1.10
+   */
+  g_object_class_install_property (gobject_class, PROP_ALLOW_RTCP_EOS,
+      g_param_spec_boolean ("allow-rtcp-eos", "Allow RTCP EOS",
+          "Allow sending EOS on RTCP pad when a bye package is sent",
+          DEFAULT_ALLOW_RTCP_EOS, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gstelement_class->change_state =
       GST_DEBUG_FUNCPTR (gst_rtp_session_change_state);
   gstelement_class->request_new_pad =
@@ -808,6 +824,7 @@ gst_rtp_session_init (GstRtpSession * rtpsession)
   rtpsession->priv->session = rtp_session_new ();
   rtpsession->priv->use_pipeline_clock = DEFAULT_USE_PIPELINE_CLOCK;
   rtpsession->priv->rtcp_sync_send_time = DEFAULT_RTCP_SYNC_SEND_TIME;
+  rtpsession->priv->allow_rtcp_eos = DEFAULT_ALLOW_RTCP_EOS;
 
   /* configure callbacks */
   rtp_session_set_callbacks (rtpsession->priv->session, &callbacks, rtpsession);
@@ -920,6 +937,9 @@ gst_rtp_session_set_property (GObject * object, guint prop_id,
     case PROP_RTCP_SYNC_SEND_TIME:
       priv->rtcp_sync_send_time = g_value_get_boolean (value);
       break;
+    case PROP_ALLOW_RTCP_EOS:
+      priv->allow_rtcp_eos = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -993,6 +1013,9 @@ gst_rtp_session_get_property (GObject * object, guint prop_id,
       break;
     case PROP_RTCP_SYNC_SEND_TIME:
       g_value_set_boolean (value, priv->rtcp_sync_send_time);
+      break;
+    case PROP_ALLOW_RTCP_EOS:
+      g_value_set_boolean (value, priv->allow_rtcp_eos);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -1435,7 +1458,7 @@ gst_rtp_session_send_rtcp (RTPSession * sess, RTPSource * src,
     result = gst_pad_push (rtcp_src, buffer);
 
     /* we have to send EOS after this packet */
-    if (eos) {
+    if (eos && rtpsession->priv->allow_rtcp_eos) {
       GST_LOG_OBJECT (rtpsession, "sending EOS");
       gst_pad_push_event (rtcp_src, gst_event_new_eos ());
     }
