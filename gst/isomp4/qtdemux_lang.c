@@ -156,7 +156,7 @@ static const gchar qt_lang_map[][4] = {
  * 098 ---
  * 099 ---
  */
-  "kin", "run", "nya", "mlg", "ep", "und", "und", "und", "und", "und",
+  "kin", "run", "nya", "mlg", "epo", "und", "und", "und", "und", "und",
 
 /* 100-109 ---
  * 110-119 ---
