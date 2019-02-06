@@ -1,3 +1,18 @@
+gst-plugins-good1.5 (1.8.1-1kurento1) UNRELEASED; urgency=medium
+
+  [ Jose Antonio Santos Cadenas ]
+  * debian: Update soup build dependency version
+  * Fix build dependencies
+  * Revert "Fix build dependencies"
+  * debian/rules: Use gstscancodecs1.5
+  * debian/control: Fix build dependencies for ubuntu wily
+
+  [ Juan Navarro ]
+  * debian: Disable docs for Ubuntu 18.04 build
+  * debian/rules: Run pre-build command with dh-autoreconf
+
+ -- Juan Navarro <juan.navarro@gmx.es>  Wed, 06 Feb 2019 18:52:38 +0100
+
 gst-plugins-good1.5 (1.5.0.1) experimental; urgency=medium
 
   * Change package name to diferenciate between versions
