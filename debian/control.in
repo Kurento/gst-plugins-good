@@ -11,22 +11,22 @@ Vcs-Git: git://anonscm.debian.org/pkg-gstreamer/gst-plugins-good@GST_ABI@.git
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=pkg-gstreamer/gst-plugins-good@GST_ABI@.git;a=summary
 Homepage: http://gstreamer.freedesktop.org/modules/gst-plugins-good.html
 
-Package: @GST_PKGNAME@-plugins-good-doc
-Architecture: all
-Section: doc
-Depends: gstreamer@GST_ABI@-doc,
-         gstreamer@GST_ABI@-plugins-base-doc,
-         ${misc:Depends}
-Description: GStreamer documentation for plugins from the "good" set
- GStreamer is a streaming media framework, based on graphs of filters
- which operate on media data.  Applications using this library can do
- anything from real-time sound processing to playing videos, and just
- about anything else media-related.  Its plugin-based architecture means
- that new data types or processing capabilities can be added simply by
- installing new plug-ins.
- .
- This package contains documentation for plugins from the "good" set,
- a set of good-quality plug-ins under the LGPL license.
+# Package: @GST_PKGNAME@-plugins-good-doc
+# Architecture: all
+# Section: doc
+# Depends: gstreamer@GST_ABI@-doc,
+#          gstreamer@GST_ABI@-plugins-base-doc,
+#          ${misc:Depends}
+# Description: GStreamer documentation for plugins from the "good" set
+#  GStreamer is a streaming media framework, based on graphs of filters
+#  which operate on media data.  Applications using this library can do
+#  anything from real-time sound processing to playing videos, and just
+#  about anything else media-related.  Its plugin-based architecture means
+#  that new data types or processing capabilities can be added simply by
+#  installing new plug-ins.
+#  .
+#  This package contains documentation for plugins from the "good" set,
+#  a set of good-quality plug-ins under the LGPL license.
 
 Package: @GST_PKGNAME@-pulseaudio
 Architecture: any
