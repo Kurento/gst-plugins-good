@@ -162,7 +162,6 @@ DEB_CONFIGURE_EXTRA_FLAGS += \
 	--enable-debug \
 	--with-package-name=$(GST_PACKAGE_NAME) \
 	--with-package-origin=$(GST_PACKAGE_ORIGIN) \
-	--enable-gtk-doc \
 	--enable-experimental \
 	--with-default-audiosink=$(DEFAULT_AUDIOSINK) \
 	--with-default-audiosrc=$(DEFAULT_AUDIOSRC) \
