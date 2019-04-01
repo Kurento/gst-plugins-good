@@ -1,3 +1,11 @@
+gst-plugins-good1.5 (1.8.1-1kurento2) UNRELEASED; urgency=medium
+
+  [ Juan Navarro ]
+  * fixup! debian: Disable docs for Ubuntu 18.04 build
+  * Prepare release 1.8.1-1kurento2
+
+ -- Juan Navarro <juan.navarro@gmx.es>  Mon, 01 Apr 2019 19:42:40 +0200
+
 gst-plugins-good1.5 (1.8.1-1kurento1) UNRELEASED; urgency=medium
 
   [ Jose Antonio Santos Cadenas ]
@@ -136,7 +144,7 @@ gst-plugins-good1.0 (1.2.3-1) unstable; urgency=medium
   [ Iain Lane ]
   * Drop ltmain-as-needed patch and do the same with dh_autoreconf
     --as-needed.
-  * Enable parallel builds 
+  * Enable parallel builds
 
   [ Sebastian Dröge ]
   * New upstream bugfix release:
@@ -439,7 +447,7 @@ gst-plugins-good0.10 (0.10.30-2.2) unstable; urgency=low
 gst-plugins-good0.10 (0.10.30-2.1) unstable; urgency=low
 
   * Non-maintainer upload.
-  * Add Replaces/Breaks to gstreamer0.10-gconf for old 
+  * Add Replaces/Breaks to gstreamer0.10-gconf for old
     gstreamer0.10-plugins-good (Closes: #646325)
 
  -- Philipp Kaluza <debian@ghostroute.eu>  Sat, 03 Dec 2011 10:34:02 +0000
@@ -518,7 +526,7 @@ gst-plugins-good0.10 (0.10.28.2-1) experimental; urgency=low
     debian/gstreamer-esd.install,
     debian/rules:
     + Drop ESD plugin, nothing is using it anymore, it is
-      unmaintained upstream and pulseaudio is a better 
+      unmaintained upstream and pulseaudio is a better
       replacement for it.
   * New upstream pre-release:
     + debian/build-deps.in,
@@ -1548,7 +1556,7 @@ gst-plugins-good0.10 (0.10.5-5) unstable; urgency=low
     + debian/build-deps.in,
       debian/rules:
       - Use type-handling to only depend on libraw1394 and friends on Linux
- 
+
     [ Sjoerd Simons ]
     + Enable experimental plugins (the v4l2src plugin)
     + Conflict with gstreamer0.10-plugins-bad < 0.10.4 which used to provide the
@@ -2237,7 +2245,7 @@ gst-plugins0.8 (0.8.1-3) unstable; urgency=low
 
   * rerun autoget.sh to fix arm builds (Closes: #251592)
   * gconf/gstreamer.schemas.in, gcon/gstreamer-0.8.schemas:
-    s/xvideosink/xvimagesink/ (Closes: #250575) 
+    s/xvideosink/xvimagesink/ (Closes: #250575)
 
  -- David I. Lehn <dlehn@debian.org>  Tue,  1 Jun 2004 10:10:37 -0400
 
@@ -2263,7 +2271,7 @@ gst-plugins0.8 (0.8.0-2) unstable; urgency=low
 
   * Bump to -2 to ease upgrades for early -1 testers
   * debian/build-deps.in:
-    * Add libgtk2.0-dev 
+    * Add libgtk2.0-dev
 
  -- David I. Lehn <dlehn@debian.org>  Thu, 15 Apr 2004 17:50:14 -0400
 
