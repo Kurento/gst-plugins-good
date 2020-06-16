@@ -1,3 +1,9 @@
+gst-plugins-good1.5 (1.8.1-1kurento4) testing; urgency=medium
+
+  * Prepare release 1.8.1-1kurento4
+
+ -- Juan Navarro <juan.navarro@gmx.es>  Tue, 16 Jun 2020 17:35:54 +0200
+
 gst-plugins-good1.5 (1.8.1-1kurento3) testing; urgency=medium
 
   [ Juan Navarro ]
