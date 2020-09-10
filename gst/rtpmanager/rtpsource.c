@@ -1806,17 +1806,33 @@ rtp_source_add_conflicting_address (RTPSource * src,
  */
 void
 rtp_source_timeout (RTPSource * src, GstClockTime current_time,
-    GstClockTime feedback_retention_window)
+    GstClockTime running_time, GstClockTime feedback_retention_window)
 {
   GstRTCPPacket *pkt;
+  GstClockTime max_pts_window;
+  guint pruned = 0;
 
   src->conflicting_addresses =
       timeout_conflicting_addresses (src->conflicting_addresses, current_time);
 
+  if (feedback_retention_window == GST_CLOCK_TIME_NONE ||
+      running_time < feedback_retention_window) {
+    return;
+  }
+
+  max_pts_window = running_time - feedback_retention_window;
+
   /* Time out AVPF packets that are older than the desired length */
-  while ((pkt = g_queue_peek_tail (src->retained_feedback)) &&
-      GST_BUFFER_PTS (pkt) < feedback_retention_window)
-    gst_buffer_unref (g_queue_pop_tail (src->retained_feedback));
+  while ((pkt = g_queue_peek_head (src->retained_feedback)) &&
+      GST_BUFFER_PTS (pkt) < max_pts_window) {
+    gst_buffer_unref (g_queue_pop_head (src->retained_feedback));
+    pruned++;
+  }
+
+  GST_LOG_OBJECT (src,
+      "%u RTCP packets pruned with PTS less than %" GST_TIME_FORMAT
+      ", queue len: %u", pruned, GST_TIME_ARGS (max_pts_window),
+      g_queue_get_length (src->retained_feedback));
 }
 
 static gint
@@ -1825,7 +1841,16 @@ compare_buffers (gconstpointer a, gconstpointer b, gpointer user_data)
   const GstBuffer *bufa = a;
   const GstBuffer *bufb = b;
 
-  return GST_BUFFER_PTS (bufa) - GST_BUFFER_PTS (bufb);
+  g_return_val_if_fail (GST_BUFFER_PTS (bufa) != GST_CLOCK_TIME_NONE, -1);
+  g_return_val_if_fail (GST_BUFFER_PTS (bufb) != GST_CLOCK_TIME_NONE, 1);
+
+  if (GST_BUFFER_PTS (bufa) < GST_BUFFER_PTS (bufb)) {
+    return -1;
+  } else if (GST_BUFFER_PTS (bufa) > GST_BUFFER_PTS (bufb)) {
+    return 1;
+  }
+
+  return 0;
 }
 
 void
@@ -1834,12 +1859,17 @@ rtp_source_retain_rtcp_packet (RTPSource * src, GstRTCPPacket * packet,
 {
   GstBuffer *buffer;
 
+  g_return_if_fail (running_time != GST_CLOCK_TIME_NONE);
+
   buffer = gst_buffer_copy_region (packet->rtcp->buffer, GST_BUFFER_COPY_MEMORY,
       packet->offset, (gst_rtcp_packet_get_length (packet) + 1) * 4);
 
   GST_BUFFER_PTS (buffer) = running_time;
 
   g_queue_insert_sorted (src->retained_feedback, buffer, compare_buffers, NULL);
+
+  GST_LOG_OBJECT (src, "RTCP packet retained with PTS: %" GST_TIME_FORMAT,
+      GST_TIME_ARGS (running_time));
 }
 
 gboolean
