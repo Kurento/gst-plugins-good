@@ -37,7 +37,8 @@ apt-get update
 # ====================
 
 PACKAGE_NAME="gstreamer1.0-plugins-good"
-SOURCE_NAME="$(dpkg-query --show --showformat='${source:Package}' "$PACKAGE_NAME")"
+
+SOURCE_NAME="$(apt-cache madison "$PACKAGE_NAME" | grep Sources | head -n1 | awk -F'[ |]+' '{print $1}')"
 
 apt-get build-dep --yes "$SOURCE_NAME"
 
@@ -69,7 +70,7 @@ dch --local '-kurento' 'Apply patches for Kurento.'
 function increment_epoch {
     local VERSION
     local EPOCH
-    VERSION="$(dpkg-query --show --showformat='${source:Version}' "$PACKAGE_NAME")"
+    VERSION="$(apt-cache madison "$PACKAGE_NAME" | grep Packages | head -n1 | awk -F'[ |]+' '{print $2}')"
     EPOCH="$(echo "$VERSION" | grep -Po "\d+(?=:)")" || true # Can be empty.
     EPOCH="$((EPOCH+1))" # Makes it "1" if EPOCH was empty.
     export EPOCH # Make it available to sed subshell.
