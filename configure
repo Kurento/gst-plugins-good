@@ -71,7 +71,7 @@ function increment_epoch {
     local VERSION
     local EPOCH
     VERSION="$(apt-cache madison "$PACKAGE_NAME" | grep Packages | head -n1 | awk '{print $3}')"
-    EPOCH="$(echo "$VERSION" | grep -Po "\d+(?=:)")" || true # Can be empty.
+    EPOCH="$(echo "$VERSION" | grep -Po '^\d+(?=:)')" || true # Can be empty.
     EPOCH="$((EPOCH+1))" # Makes it "1" if EPOCH was empty.
     export EPOCH # Make it available to sed subshell.
     # shellcheck disable=SC2016
