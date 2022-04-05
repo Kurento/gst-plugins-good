@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+
+# Build a patched package.
+#
+# This shell script downloads all dependencies and tools needed to build the
+# desired package; applies any existing patches to it, and runs the standard
+# Debian packaging tools to generate a new package that can be used to replace
+# the original one.
+
+
+
+# Shell setup
+# ===========
+
+# Bash options for strict error checking
+set -o errexit -o errtrace -o pipefail -o nounset
+
+# Trace all commands
+set -o xtrace
+
+
+
+# Configure Apt
+# =============
+
+# Disable interactive prompts
+export DEBIAN_FRONTEND="noninteractive"
+
+# Enable all source repositories
+sed -i 's/# deb-src/deb-src/' /etc/apt/sources.list
+
+apt-get update
+
+
+
+# Install dependencies
+# ====================
+
+PACKAGE_NAME="gstreamer1.0-plugins-good"
+SOURCE_NAME="$(dpkg-query --show --showformat='${source:Package}' "$PACKAGE_NAME")"
+
+apt-get build-dep --yes "$SOURCE_NAME"
+
+
+
+# Prepare source package
+# ======================
+
+# Download the original sources from system repositories.
+apt-get source "$SOURCE_NAME"
+pushd ./"$SOURCE_NAME"*/
+
+# Add patches to the quilt storage.
+# During the build process, these will be applied on the source code.
+mkdir -p ./debian/patches/
+for FILE in ../*.patch; do
+    cp "$FILE" ./debian/patches/
+    basename "$FILE" >> ./debian/patches/series
+done
+
+# Ensure that the patches can be cleanly applied over the original sources.
+quilt push
+quilt refresh
+
+# Add a new changelog entry. Ensure that the version "epoch" is higher, to avoid
+# getting replaced with system's security updates.
+dch --local '-kurento' 'Apply patches for Kurento.'
+
+function increment_epoch {
+    local VERSION
+    local EPOCH
+    VERSION="$(dpkg-query --show --showformat='${source:Version}' "$PACKAGE_NAME")"
+    EPOCH="$(echo "$VERSION" | grep -Po "\d+(?=:)")" || true # Can be empty.
+    EPOCH="$((EPOCH+1))" # Makes it "1" if EPOCH was empty.
+    export EPOCH # Make it available to sed subshell.
+    # shellcheck disable=SC2016
+    sed -ri '1 s/(.*\()([0-9]+:)?(.*)/echo "\1$EPOCH:\3"/e' debian/changelog
+}
+
+increment_epoch
+
+
+
+# Build package
+# =============
+
+dpkg-buildpackage -us -uc -b
+
+popd # $SOURCE_NAME
+
+# Move everything up; it is a convention to leave packages in the parent dir.
+mv ./*.*deb ../

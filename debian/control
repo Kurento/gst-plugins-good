@@ -1,0 +1,26 @@
+Source: gstreamer1.0-plugins-good-kurento
+Maintainer: Kurento <info@kurento.org>
+Priority: optional
+Build-Depends: debhelper (>= 12),
+ devscripts,
+ dpkg-dev,
+ quilt
+Standards-Version: 4.4.1
+Homepage: https://www.kurento.org/
+Vcs-Browser: https://github.com/Kurento/gst-plugins-good
+Vcs-Git: https://github.com/Kurento/gst-plugins-good.git
+
+Package: gstreamer1.0-plugins-good-kurento
+Architecture: any
+Section: libs
+Depends: ${shlibs:Depends}, ${misc:Depends},
+ gstreamer1.0-plugins-good
+Description: gstreamer1.0-plugins-good patched for Kurento (shared library)
+
+Package: gstreamer1.0-plugins-good-kurento-dbg
+Architecture: any
+Section: debug
+Depends: ${misc:Depends},
+ gstreamer1.0-plugins-good-kurento (= ${binary:Version}),
+ gstreamer1.0-plugins-good-dbg
+Description: gstreamer1.0-plugins-good patched for Kurento (debug symbols)

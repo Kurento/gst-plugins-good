@@ -1,0 +1,30 @@
+Project details
+===============
+
+This debian/ folder has been created from scratch with `dh_make`:
+
+    DEBFULLNAME='Kurento' \
+    DEBEMAIL='info@kurento.org' \
+    dh_make --library --native --yes \
+        --packagename "gstreamer1.0-plugins-good-kurento_1.0.0-0kurento1" \
+        --copyright apache
+
+Related sources:
+* Upstream: https://gitlab.freedesktop.org/gstreamer/gst-plugins-good
+* Debian/Ubuntu package: git://git.launchpad.net/~ubuntu-desktop/ubuntu/+source/gst-plugins-good1.0
+
+
+
+Build method
+============
+
+In order to build a patched version, this project contains a `./configure` file
+that will:
+
+* Download source code from the system's repositories.
+* Apply any existing patches to the source code.
+* Build a new package.
+
+The usual Debian packaging methods are followed, by defining a `debian/rules`
+file which simply calls `dh`, part of the Debhelper tooling. `dh` will in turn
+call `dh_auto_configure`, which calls our own `./configure`.

@@ -1,0 +1,10 @@
+# Debian package build files.
+*.buildinfo
+*.changes
+*.debian.tar.xz
+*.dsc
+*.orig.tar.xz
+debian/*.substvars
+debian/*.substvars
+debian/*debhelper*
+debian/files

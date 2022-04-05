@@ -1,0 +1,119 @@
+From b0519b971191af7c6fa47376c3362416b84238f2 Mon Sep 17 00:00:00 2001
+From: Matthew Waters <matthew@centricular.com>
+Date: Thu, 10 Jun 2021 12:34:17 +1000
+Subject: [PATCH] matroska/mux: support changing vp8/9 resolution and framerate
+
+Most of the other players (VLC, ffplay, Firefox, Chrome) can actually play
+resolution and framerate changing vp8/9 just fine without any particular
+container support.
+---
+ gst/matroska/matroska-mux.c | 90 ++++++++++++++++++++++++++++++-------
+ 1 file changed, 74 insertions(+), 16 deletions(-)
+
+diff --git a/gst/matroska/matroska-mux.c b/gst/matroska/matroska-mux.c
+index 48f24fd3a..a62041cf5 100644
+--- a/gst/matroska/matroska-mux.c
++++ b/gst/matroska/matroska-mux.c
+@@ -927,6 +927,79 @@ gst_matroska_mux_set_codec_id (GstMatroskaTrackContext * context,
+   context->codec_id = g_strdup (id);
+ }
+ 
++static gboolean
++check_field (GQuark field_id, const GValue * value, gpointer user_data)
++{
++  GstStructure *structure = (GstStructure *) user_data;
++  const GValue *other = gst_structure_id_get_value (structure, field_id);
++  const char *name = gst_structure_get_name (structure);
++
++  if (g_str_has_prefix (name, "video/")) {
++    if (g_strcmp0 (g_quark_to_string (field_id), "framerate") == 0)
++      return TRUE;
++  }
++
++  if (g_strcmp0 (name, "video/x-vp8") == 0 ||
++      g_strcmp0 (name, "video/x-vp9") == 0) {
++    /* numerous players support changing the vp8/vp9 resolution midstream just
++     * fine without any particular extra support from the container */
++    if (g_strcmp0 (g_quark_to_string (field_id), "streamheader") == 0)
++      return TRUE;
++    if (g_strcmp0 (g_quark_to_string (field_id), "width") == 0)
++      return TRUE;
++    if (g_strcmp0 (g_quark_to_string (field_id), "height") == 0)
++      return TRUE;
++  }
++
++  if (other == NULL)
++    return FALSE;
++
++  return gst_value_compare (value, other) == GST_VALUE_EQUAL;
++}
++
++static gboolean
++gst_matroska_mux_caps_is_subset (GstMatroskaMux * mux, GstCaps * subset,
++    GstCaps * superset)
++{
++  GstStructure *sub_s = gst_caps_get_structure (subset, 0);
++  GstStructure *sup_s = gst_caps_get_structure (superset, 0);
++
++  if (!gst_structure_has_name (sup_s, gst_structure_get_name (sub_s)))
++    return FALSE;
++
++  return gst_structure_foreach (sub_s, check_field, sup_s);
++}
++
++static gboolean
++gst_matroska_mux_can_renegotiate_caps (GstMatroskaMux * mux, GstPad * pad,
++    GstCaps * new_caps)
++{
++  GstCaps *old_caps = gst_pad_get_current_caps (pad);
++
++  if (mux->state < GST_MATROSKA_MUX_STATE_HEADER)
++    return TRUE;
++
++  if (!old_caps) {
++    /* we can't add caps to an already running mux */
++    GST_ELEMENT_ERROR (mux, STREAM, MUX, (NULL),
++        ("Caps on pad %" GST_PTR_FORMAT
++            " arrived late. Headers were already written", pad));
++    return FALSE;
++  }
++
++  if (!gst_matroska_mux_caps_is_subset (mux, new_caps, old_caps)) {
++    GST_ELEMENT_ERROR (mux, STREAM, MUX, (NULL),
++        ("Most caps changes are not supported by Matroska\nCurrent: `%"
++            GST_PTR_FORMAT "`\nNew: `%" GST_PTR_FORMAT "`", old_caps,
++            new_caps));
++    gst_caps_unref (old_caps);
++    return FALSE;
++  }
++
++  gst_caps_unref (old_caps);
++  return TRUE;
++}
++
+ /**
+  * gst_matroska_mux_video_pad_setcaps:
+  * @pad: Pad which got the caps.
+@@ -951,20 +1024,11 @@ gst_matroska_mux_video_pad_setcaps (GstPad * pad, GstCaps * caps)
+   gint width, height, pixel_width, pixel_height;
+   gint fps_d, fps_n;
+   guint multiview_flags;
+-  GstCaps *old_caps;
+ 
+   mux = GST_MATROSKA_MUX (GST_PAD_PARENT (pad));
+ 
+-  if ((old_caps = gst_pad_get_current_caps (pad))) {
+-    if (mux->state >= GST_MATROSKA_MUX_STATE_HEADER
+-        && !gst_caps_is_equal (caps, old_caps)) {
+-      GST_ELEMENT_ERROR (mux, STREAM, MUX, (NULL),
+-          ("Caps changed are not supported by Matroska"));
+-      gst_caps_unref (old_caps);
+-      goto refuse_caps;
+-    }
+-    gst_caps_unref (old_caps);
+-  }
++  if (!gst_matroska_mux_can_renegotiate_caps (mux, pad, caps))
++    goto refuse_caps;
+ 
+   /* find context */
+   collect_pad = (GstMatroskaPad *) gst_pad_get_element_private (pad);
