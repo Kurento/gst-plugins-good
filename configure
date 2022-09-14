@@ -18,6 +18,26 @@ set -o errexit -o errtrace -o pipefail -o nounset
 # Trace all commands
 set -o xtrace
 
+# Check dependencies.
+command -v quilt >/dev/null || {
+    echo "ERROR: 'quilt' is not installed; please install it (package 'quilt')"
+    exit 1
+}
+command -v dch >/dev/null || {
+    echo "ERROR: 'dch' is not installed; please install it (package 'devscripts')"
+    exit 1
+}
+command -v dpkg-buildpackage >/dev/null || {
+    echo "ERROR: 'dpkg-buildpackage' is not installed; please install it (package 'dpkg-dev')"
+    exit 1
+}
+
+# Check permissions.
+[[ "$(id -u)" -eq 0 ]] || {
+    echo "ERROR: Please run as root (or with 'sudo'); this script installs packages with apt-get"
+    exit 1
+}
+
 
 
 # Configure Apt
@@ -26,15 +46,17 @@ set -o xtrace
 # Disable interactive prompts
 export DEBIAN_FRONTEND="noninteractive"
 
-# Enable all source repositories
-sed -i 's/# deb-src/deb-src/' /etc/apt/sources.list
+# Uncomment system's source repositories.
+sed --regexp-extended --in-place \
+    's/# *(deb-src.*(main|restricted|universe|multiverse))/\1/' \
+    /etc/apt/sources.list
 
 apt-get update
 
 
 
-# Install dependencies
-# ====================
+# Install build dependencies
+# ==========================
 
 PACKAGE_NAME="gstreamer1.0-plugins-good"
 
@@ -52,7 +74,7 @@ apt-get source "$SOURCE_NAME"
 pushd ./"$SOURCE_NAME"*/
 
 # Add patches to the quilt storage.
-# During the build process, these will be applied on the source code.
+# During the build process, these will be applied to the source code.
 mkdir -p ./debian/patches/
 for FILE in ../*.patch; do
     cp "$FILE" ./debian/patches/
@@ -63,8 +85,9 @@ done
 quilt push
 quilt refresh
 
-# Add a new changelog entry. Ensure that the version "epoch" is higher, to avoid
-# getting replaced with system's security updates.
+# Add a new changelog entry. Ensure that the Debian package version's Epoch
+# is higher, to avoid it from getting replaced with system's updates.
+# See Debian New Maintainers' Guide for info about Epoch in version numbers.
 dch --local '-kurento' 'Apply patches for Kurento.'
 
 function increment_epoch {
