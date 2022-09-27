@@ -11,7 +11,7 @@ This debian/ folder has been created from scratch with `dh_make`:
 
 Related sources:
 * Upstream: https://gitlab.freedesktop.org/gstreamer/gst-plugins-good
-* Debian/Ubuntu package: git://git.launchpad.net/~ubuntu-desktop/ubuntu/+source/gst-plugins-good1.0
+* Debian/Ubuntu package: https://git.launchpad.net/~ubuntu-desktop/ubuntu/+source/gst-plugins-good1.0
 
 
 
