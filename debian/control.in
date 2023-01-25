@@ -14,7 +14,7 @@ Package: gstreamer1.0-plugins-good-kurento
 Architecture: any
 Section: libs
 Depends: ${shlibs:Depends}, ${misc:Depends},
- gstreamer1.0-plugins-good
+ gstreamer1.0-plugins-good (= @PACKAGE_VERSION@)
 Description: Dummy package that depends on Kurento patched gstreamer1.0-plugins-good (shared library)
 
 Package: gstreamer1.0-plugins-good-kurento-dbg
@@ -22,5 +22,5 @@ Architecture: any
 Section: debug
 Depends: ${misc:Depends},
  gstreamer1.0-plugins-good-kurento (= ${binary:Version}),
- gstreamer1.0-plugins-good-dbg
+ gstreamer1.0-plugins-good-dbg (= @PACKAGE_VERSION@)
 Description: Dummy package that depends on Kurento patched gstreamer1.0-plugins-good (debug symbols)
