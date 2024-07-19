@@ -64,7 +64,7 @@ jobs:
           JOB_GIT_NAME_FALLBACK: "${{ inputs.jobGitNameFallback }}"
           JOB_RELEASE: "${{ inputs.jobRelease }}"
           DISABLE_APT_PROXY: "true"
-        run: "kurento_ci_job_package_debian.sh"
+        run: "ci_job_package_debian.sh"
 
       # Action: https://github.com/actions/upload-artifact
       - name: "Archive the artifacts"
